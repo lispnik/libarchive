@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned, not *-latest, so the libarchive under test changes only on purpose.
+          # Ubuntu 24.04 ships libarchive 3.7.2, older than the 3.8.9 headers the raw
+          # layer is generated from: that is the "older library" case the symbol suite
+          # skips for, and every function the ergonomic layer calls exists in 3.7.2.
+          # Linux is also where the non-darwin mode_t/dev_t sizes get exercised.
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-24.04
+          - os: linux
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+          # Homebrew's current, keg-only libarchive, as in development.
+          - os: macos
+            arch: arm64
+            runner: macos-15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # libarchive-dev rather than the runtime package: its name is stable across
+      # releases (the runtime is libarchive13t64 on 24.04), and it brings the runtime
+      # in. zip is for the cross-check against Info-ZIP; tar is already there.
+      - name: Install SBCL and libarchive (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            sbcl libarchive-dev pkg-config zip
+          dpkg-query -W -f='${Package} ${Version}\n' 'libarchive13*'
+
+      - name: Install SBCL and libarchive (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install sbcl libarchive
+          brew list --versions libarchive
+          echo "PKG_CONFIG_PATH=$(brew --prefix libarchive)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Cache ocicl
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/bin
+            ~/.local/share/ocicl
+          key: ocicl-${{ matrix.os }}-${{ matrix.arch }}-v1
+
+      # Keyed on ocicl.csv because that file pins every dependency by OCI digest: if it
+      # has not changed, neither have the bytes underneath it.
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: ocicl
+          key: deps-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('ocicl.csv') }}
+
+      # ocicl builds from source with `sbcl --load setup.lisp', which installs the binary
+      # in ~/.local/bin. Cloned outside the workspace, because ./ocicl is where this
+      # project's vendored dependencies live. Each command on its own line so that a
+      # failure fails the step: inside an `if', a failing `&&' chain does not trip
+      # bash -e.
+      - name: Install ocicl if it is not cached
+        run: |
+          if ! command -v ocicl >/dev/null && [ ! -x ~/.local/bin/ocicl ]; then
+            git clone --depth 1 --quiet https://github.com/ocicl/ocicl.git "$RUNNER_TEMP/ocicl"
+            (cd "$RUNNER_TEMP/ocicl" && sbcl --non-interactive --load setup.lisp > /dev/null)
+            test -x ~/.local/bin/ocicl
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set up ocicl
+        run: ocicl setup > /dev/null
+
+      - name: Test
+        run: ci/test.sh
