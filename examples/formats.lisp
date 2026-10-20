@@ -93,17 +93,22 @@ libarchive cannot write that combination."
       ;; Read back, base64 is detected as libarchive's "uu" decoder.
       (assert (equal filters '("zstd" "uu")))))
 
-  ;; Format and filters from a file name.
+  ;; Format and filters from a file name. Which names libarchive knows depends
+  ;; on its version: 3.8.9 has no .tar.zst, 3.8.10 does.
   (dolist (name '("x.tar.gz" "x.tgz" "x.tar.xz" "x.zip" "x.7z" "x.cpio" "x.tar.zst"))
     (let ((path (merge-pathnames name (uiop:temporary-directory))))
       (unwind-protect
-           (progn
-             (with-archive-writer (w path :format :by-extension)
-               (add-entry w "a.txt" :data "a"))
-             (with-archive-reader (r path)
-               (next-entry r)
-               (format t "~&~12A -> ~A~@[ + ~{~A~^, ~}~]~%"
-                       name (archive-format-name r) (archive-filter-names r))))
+           (handler-case
+               (progn
+                 (with-archive-writer (w path :format :by-extension)
+                   (add-entry w "a.txt" :data "a"))
+                 (with-archive-reader (r path)
+                   (next-entry r)
+                   (format t "~&~12A -> ~A~@[ + ~{~A~^, ~}~]~%"
+                           name (archive-format-name r) (archive-filter-names r))))
+             (archive-error (c)
+               (format t "~&~12A -> not known to this libarchive (~A)~%"
+                       name (archive-condition-message c))))
         (uiop:delete-file-if-exists path))))
 
   ;; Options: libarchive's "module:option=value" text, or an alist of the same.

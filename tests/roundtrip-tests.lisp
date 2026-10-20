@@ -116,10 +116,10 @@
   ;; unless LOAD-LIBRARIES fixes it: then pax crashed outright, ustar wrote an
   ;; empty name, 7z a damaged archive and cpio refused the entry.
   (flet ((normalize (names format)
-           ;; iso9660 lists directories without the slash, and adds ".".
+           ;; iso9660 and xar list directories without the slash; iso9660 adds ".".
            (sort (loop for n in names
                        unless (string= n ".")
-                         collect (if (eq format :iso9660) (string-right-trim "/" n) n))
+                         collect (if (member format '(:iso9660 :xar)) (string-right-trim "/" n) n))
                  #'string<)))
     (dolist (format '(:pax-restricted :pax :ustar :gnutar :zip :7zip :cpio-newc :cpio-odc
                       :ar-bsd :iso9660 :xar))
