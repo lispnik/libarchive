@@ -10,7 +10,7 @@
   (:use #:cl)
   (:export
    ;; library.lisp
-   #:*library-directories* #:load-libraries
+   #:*library-directories* #:load-libraries #:*ensure-utf-8-locale*
    ;; types.lisp
    #:archive #:archive-entry #:mode-t #:dev-t #:time-t
    ;; conditions.lisp

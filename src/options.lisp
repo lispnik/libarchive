@@ -70,7 +70,8 @@
 
 ;;; Option strings: libarchive takes "module:option=value,..." text. Accept that
 ;;; text, or an alist of (option . value) where option is a string such as
-;;; "zip:compression", value T means "option", NIL "!option", and anything else
+;;; "zip:compression", value T means "option", NIL its negation ("!option", or
+;;; "module:!option" -- libarchive wants the ! after the module), and anything else
 ;;; "option=value".
 
 (defun options-string (options)
@@ -80,7 +81,12 @@
                   (loop for (key . value) in options
                         for name = (if (stringp key) key (string-downcase key))
                         collect (cond ((eq value t) name)
-                                      ((null value) (format nil "!~A" name))
+                                      ((null value)
+                                       (let ((colon (position #\: name)))
+                                         (if colon
+                                             (format nil "~A!~A" (subseq name 0 (1+ colon))
+                                                     (subseq name (1+ colon)))
+                                             (format nil "!~A" name))))
                                       (t (format nil "~A=~A" name
                                                  (if (keywordp value)
                                                      (string-downcase value)

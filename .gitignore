@@ -6,3 +6,6 @@
 # Vendored dependencies, restored with `ocicl install'. ocicl.csv pins them by
 # OCI digest and IS tracked; the sources themselves are not.
 ocicl/
+
+# make la
+bin/

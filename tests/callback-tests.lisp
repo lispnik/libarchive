@@ -93,3 +93,26 @@
     (signals test-stream-error
       (archive-directory dir :octets :filter (lambda (e) (declare (ignore e))
                                                (error 'test-stream-error))))))
+
+(test first-calls-from-many-threads-at-once
+  ;; Needs a fresh image: this one loaded libarchive long ago. Eight threads
+  ;; making their first libarchive call together once crashed in
+  ;; archive_write_new, because LOAD-LIBRARIES ran in all of them at once.
+  ;; Separate --evals, because each is read only after the one before has run.
+  (let* ((root (uiop:native-namestring (asdf:system-source-directory :libarchive)))
+         (forms
+           (list "(require :asdf)"
+                 (format nil "(asdf:initialize-source-registry '(:source-registry (:tree ~S) ~
+                              :ignore-inherited-configuration))" root)
+                 "(asdf:load-system :libarchive)"
+                 "(let ((threads (loop repeat 8 collect
+                     (sb-thread:make-thread
+                       (lambda () (length (libarchive:with-archive-to-octets (w :format :zip)
+                                            (libarchive:add-entry w \"a\" :data \"a\"))))))))
+                    (format t \"~&OK ~D~%\" (length (mapcar #'sb-thread:join-thread threads))))")))
+    (multiple-value-bind (out err code)
+        (uiop:run-program (list* sb-ext:*runtime-pathname* "--core" (namestring sb-ext:*core-pathname*)
+                                 "--noinform" "--non-interactive" "--no-userinit" "--no-sysinit"
+                                 (loop for f in forms append (list "--eval" f)))
+                          :output :string :error-output :string :ignore-error-status t)
+      (is (and (zerop code) (search "OK 8" out)) "exit ~D~%~A~%~A" code out err))))

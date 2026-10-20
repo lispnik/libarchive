@@ -79,3 +79,13 @@
 (test foreign-function-probe
   (is-true (foreign-function-available-p "archive_read_new"))
   (is-false (foreign-function-available-p "archive_no_such_function")))
+
+(test options-alist-negation
+  (is (string= "gzip:!timestamp,!checksum,zip:compression=store,iso9660:rockridge"
+               (libarchive::options-string '(("gzip:timestamp" . nil) ("checksum" . nil)
+                                             ("zip:compression" . :store)
+                                             ("iso9660:rockridge" . t)))))
+  ;; And libarchive accepts the negated, module-qualified form.
+  (is (plusp (length (with-archive-to-octets (w :format :ustar :filters :gzip
+                                                :options '(("gzip:timestamp" . nil)))
+                       (add-entry w "a" :data "a"))))))

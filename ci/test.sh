@@ -22,3 +22,6 @@ tar --version | head -1 || true
 
 make test
 make check
+make examples
+make la
+make cli-test

@@ -140,3 +140,6 @@
 
 (defun stream-octets (s)
   (coerce (octet-output-stream-data s) '(simple-array (unsigned-byte 8) (*))))
+
+(defun last-char (string)
+  (and (plusp (length string)) (char string (1- (length string)))))

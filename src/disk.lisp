@@ -101,21 +101,46 @@ Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart.
     (nreverse extracted)))
 
 (defun archive-directory (directory target &rest writer-keys
-                          &key filter (read-disk-flags '()) &allow-other-keys)
+                          &key filter (read-disk-flags '()) name (directories t)
+                          &allow-other-keys)
   "Archive the contents of DIRECTORY into TARGET, with entry names relative to
 DIRECTORY. TARGET is an open ARCHIVE-WRITER (left open), or anything
 OPEN-ARCHIVE-WRITER accepts, in which case WRITER-KEYS (:FORMAT, :FILTERS,
 :OPTIONS, :PASSPHRASE) are passed to it and the writer is closed. Returns the
 number of entries written.
 
+NAME, if given, roots the entries there instead: the directory itself is
+stored as NAME and its contents as NAME/..., the way tar stores a directory
+named on its command line. DIRECTORY may also be a plain file, which is stored
+as NAME (by default its file name).
+
 FILTER, if given, is called with each entry found on disk (its pathname is
 absolute here) and the entry -- and, for a directory, everything below it -- is
 skipped unless it returns true. READ-DISK-FLAGS are keywords from
-*READ-DISK-FLAGS*, e.g. :no-xattr. Hard links are archived as separate copies."
-  (let* ((root (string-right-trim "/" (uiop:native-namestring
-                                       (truename (uiop:ensure-directory-pathname directory)))))
-         (prefix (concatenate 'string root "/"))
+*READ-DISK-FLAGS*, e.g. :no-xattr. Hard links are archived as separate copies.
+DIRECTORIES NIL leaves directory entries out (their contents still go in), for
+formats such as warc and ar that cannot store a directory."
+  (let* ((directory-p (uiop:directory-exists-p directory))
+         (root (if directory-p
+                   (string-right-trim "/" (uiop:native-namestring
+                                           (truename (uiop:ensure-directory-pathname directory))))
+                   (uiop:native-namestring
+                    (or (probe-file directory)
+                        (error 'archive-error :operation "archive-directory"
+                                              :code +archive-failed+
+                                              :message (format nil "~A does not exist" directory))))))
+         (name (or name (unless directory-p (file-namestring root))))
+         ;; Names read back are NFC on macOS (see NATIVE-STRING), so compare in NFC.
+         (prefix (concatenate 'string (native-string root) "/"))
          (count 0))
+    (flet ((archive-name (disk-name)
+             ;; The name to store for what read_disk calls DISK-NAME, or NIL to
+             ;; leave it out (the root itself, when it has no name of its own).
+             (cond ((string= disk-name (native-string root)) name)
+                   ((and (> (length disk-name) (length prefix))
+                         (string= prefix disk-name :end2 (length prefix)))
+                    (let ((relative (subseq disk-name (length prefix))))
+                      (if name (concatenate 'string name "/" relative) relative))))))
     (labels ((walk (writer)
                (load-libraries)
                (let ((disk (make-handle 'disk-reader (%archive-read-disk-new)))
@@ -135,10 +160,10 @@ skipped unless it returns true. READ-DISK-FLAGS are keywords from
                               while e
                               do (unless (zerop (%archive-read-disk-can-descend (live-pointer disk)))
                                    (checked disk (%archive-read-disk-descend)))
-                                 (let ((name (entry-pathname e)))
-                                   (when (and (> (length name) (length prefix))
-                                              (string= prefix name :end2 (length prefix)))
-                                     (setf (entry-pathname e) (subseq name (length prefix)))
+                                 (let ((stored (archive-name (entry-pathname e))))
+                                   (when (and stored
+                                              (or directories (not (eq (entry-type e) :directory))))
+                                     (setf (entry-pathname e) stored)
                                      (checked writer (%archive-write-header (entry-pointer e)))
                                      (when (eq (entry-type e) :regular)
                                        (loop for n = (read-entry-data-into disk buffer)
@@ -151,9 +176,9 @@ skipped unless it returns true. READ-DISK-FLAGS are keywords from
           (walk target)
           (let ((writer (apply #'open-archive-writer target
                                (loop for (k v) on writer-keys by #'cddr
-                                     unless (member k '(:filter :read-disk-flags))
+                                     unless (member k '(:filter :read-disk-flags :name :directories))
                                        append (list k v))))
                 (ok nil))
             (unwind-protect (progn (walk writer) (setf ok t))
-              (close-archive writer :abort (not ok))))))
+              (close-archive writer :abort (not ok)))))))
     count))

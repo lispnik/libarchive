@@ -110,3 +110,52 @@
     (is (octets= (babel:string-to-octets "direct")
                  (read-file (merge-pathnames "direct/file" dir))))
     (is (= +sample-mtime+ (file-write-date (merge-pathnames "direct/file" dir))))))
+
+(test non-ascii-names-on-disk
+  ;; Extraction and read_disk both go through the locale conversion too.
+  (with-temp-directory (dir)
+    (let* ((archive (with-archive-to-octets (w :format :pax-restricted :filters :gzip)
+                      (add-entry w "Grüße/日本語.txt" :data "konnichiwa")))
+           (out (merge-pathnames "out/" dir)))
+      (is (equal '("Grüße/日本語.txt") (extract-archive archive out)))
+      (is (string= "konnichiwa"
+                   (uiop:read-file-string (merge-pathnames "Grüße/日本語.txt" out))))
+      (let ((again (with-archive-to-octets (w :format :zip)
+                     (archive-directory out w))))
+        (is (equal '("Grüße/" "Grüße/日本語.txt")
+                   (sort (archive-entry-names again) #'string<)))))))
+
+(test archive-directory-with-a-name
+  (with-temp-directory (dir)
+    (let ((tree (make-tree dir)))
+      ;; A directory under a name of its own, the way `tar cf x.tar tree' stores it.
+      (let ((archive (with-archive-to-octets (w :format :ustar)
+                       (archive-directory tree w :name "proj"))))
+        (is (equal '("proj/" "proj/a.txt" "proj/skip/" "proj/skip/ignored" "proj/sub/"
+                     "proj/sub/b.bin" "proj/sub/deeper/" "proj/sub/deeper/c")
+                   (sort (archive-entry-names archive) #'string<))))
+      ;; A single file: stored under its file name, or the name given.
+      (let ((file (merge-pathnames "a.txt" tree)))
+        (is (equal '("a.txt" "notes/alpha.txt")
+                   (archive-entry-names
+                    (with-archive-to-octets (w :format :ustar)
+                      (archive-directory file w)
+                      (archive-directory file w :name "notes/alpha.txt")))))
+        (is (equal '(("a.txt" . "a"))
+                   (mapcar (lambda (p) (cons (car p) (babel:octets-to-string (cdr p))))
+                           (entries-alist (with-archive-to-octets (w :format :zip)
+                                            (archive-directory file w))))))))))
+
+(test archive-directory-of-a-missing-path
+  (signals archive-error
+    (with-archive-to-octets (w :format :ustar)
+      (archive-directory #p"/nonexistent/path/" w))))
+
+(test archive-directory-without-directory-entries
+  (with-temp-directory (dir)
+    (let ((tree (make-tree dir)))
+      (is (equal '("a.txt" "skip/ignored" "sub/b.bin" "sub/deeper/c")
+                 (sort (archive-entry-names
+                        (with-archive-to-octets (w :format :warc)
+                          (archive-directory tree w :directories nil)))
+                       #'string<))))))

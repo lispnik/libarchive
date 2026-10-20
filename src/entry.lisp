@@ -86,14 +86,29 @@
 
 ;;; Strings.
 
+(declaim (inline native-string))
+(defun native-string (string)
+  "STRING as read from libarchive, in NFC on macOS.
+
+On Apple platforms libarchive converts every name it reads to the locale's
+charset in Unicode normalization form D, the form HFS+ used, so \"Grüße\"
+written comes back as \"Gru\\u0308ße\". Elsewhere it does no normalization.
+Recomposing makes a name read back equal to the name written, and the same on
+every platform; APFS is normalization-insensitive, so nothing on disk changes."
+  #+darwin (if (and string (find-if (lambda (c) (> (char-code c) 127)) string))
+               (sb-unicode:normalize-string string :nfc)
+               string)
+  #-darwin string)
+
 (defmacro define-string-accessor (name getter setter &optional fallback)
   "NAME reads with GETTER (a _utf8 accessor); if that cannot convert, FALLBACK,
 the locale-encoded accessor, is tried. (SETF NAME) writes with SETTER."
   `(progn
      (defun ,name (entry)
        (let ((p (entry-pointer entry)))
-         (or (,getter p)
-             ,@(when fallback `((ignore-errors (,fallback p)))))))
+         (native-string
+          (or (,getter p)
+              ,@(when fallback `((ignore-errors (,fallback p))))))))
      (defun (setf ,name) (value entry)
        (,setter (entry-pointer entry) value)
        value)))
@@ -179,6 +194,14 @@ the locale-encoded accessor, is tried. (SETF NAME) writes with SETTER."
 ;;; Extended attributes, as an alist of (name . octets).
 
 (defun entry-xattrs (entry)
+  "ENTRY's extended attributes, an alist of (name . octets), each name once.
+
+The pax writer records every attribute twice, as LIBARCHIVE.xattr.* and as
+SCHILY.xattr.* for other tars, and libarchive's pax reader adds both to the
+entry; only the first of each name is kept."
+  (remove-duplicates (entry-xattrs-raw entry) :key #'car :test #'string= :from-end t))
+
+(defun entry-xattrs-raw (entry)
   (let ((p (entry-pointer entry)))
     (%archive-entry-xattr-reset p)
     (cffi:with-foreign-objects ((name :pointer) (value :pointer) (size :size))

@@ -116,6 +116,9 @@ NIL. If ENTRY has no size set and DATA is given, its size is set from DATA."
            (checked writer (%archive-write-finish-entry))))
     (etypecase data
       (null
+       ;; No data is zero bytes of it; cpio, for one, refuses an entry with
+       ;; no size at all, even a directory.
+       (unless (entry-size-set-p entry) (setf (entry-size entry) 0))
        (header))
       ((or string vector)
        (let ((octets (ensure-octets data)))

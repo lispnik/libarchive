@@ -79,3 +79,37 @@
              ;; `asdf:test-system' -- and so `make test' -- green on a failure.
              (unless (uiop:symbol-call :libarchive/tests '#:run-tests)
                (error "The libarchive test suite failed."))))
+
+(asdf:defsystem #:libarchive/cli
+  :description "la: extract, create, list and test archives of every kind libarchive knows."
+  :license     "MIT"
+  :version     "0.1.0"
+  :depends-on  (#:libarchive #:clingon #:sb-posix)
+  :components ((:module "cli"
+                :components ((:file "package")
+                             (:file "util"    :depends-on ("package"))
+                             (:file "formats" :depends-on ("util"))
+                             (:file "main"    :depends-on ("util"))
+                             ;; One file per command (list.lisp has l, t and i);
+                             ;; each registers itself with main.lisp.
+                             (:file "extract" :depends-on ("main" "formats"))
+                             (:file "add"     :depends-on ("main" "formats" "extract"))
+                             (:file "list"    :depends-on ("main" "extract")))))
+  :build-operation "program-op"
+  :build-pathname  "bin/la"
+  :entry-point     "libarchive/cli:main"
+  :in-order-to ((asdf:test-op (asdf:test-op #:libarchive/cli/tests))))
+
+(asdf:defsystem #:libarchive/cli/tests
+  :description "Tests for la, run in-process."
+  :license     "MIT"
+  :version     "0.1.0"
+  :depends-on  (#:libarchive/cli #:fiveam)
+  :components ((:module "cli-tests"
+                :serial t
+                :components ((:file "package")
+                             (:file "cli-tests"))))
+  :perform (asdf:test-op (op c)
+             (declare (ignore op c))
+             (unless (uiop:symbol-call :libarchive/cli/tests '#:run-tests)
+               (error "The la test suite failed."))))

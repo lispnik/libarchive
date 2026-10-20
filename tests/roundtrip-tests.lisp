@@ -110,3 +110,30 @@
                    (with-entry (e :pathname "s")
                      (write-entry w e (make-octet-input-stream (babel:string-to-octets "streamed")))))))
     (is (string= "streamed" (babel:octets-to-string (cdr (first (entries-alist archive))))))))
+
+(test non-ascii-names-in-every-format
+  ;; libarchive converts names through the process locale, which in SBCL is "C"
+  ;; unless LOAD-LIBRARIES fixes it: then pax crashed outright, ustar wrote an
+  ;; empty name, 7z a damaged archive and cpio refused the entry.
+  (flet ((normalize (names format)
+           ;; iso9660 lists directories without the slash, and adds ".".
+           (sort (loop for n in names
+                       unless (string= n ".")
+                         collect (if (eq format :iso9660) (string-right-trim "/" n) n))
+                 #'string<)))
+    (dolist (format '(:pax-restricted :pax :ustar :gnutar :zip :7zip :cpio-newc :cpio-odc
+                      :ar-bsd :iso9660 :xar))
+      (when (format-supported-p format)
+        (let* ((names (if (eq format :ar-bsd)
+                          ;; ar has no directories, only file names.
+                          '("日本語.txt" "naïve café ☕.txt")
+                          '("Grüße/" "Grüße/日本語.txt" "naïve café ☕.txt")))
+               (archive (with-archive-to-octets (w :format format)
+                          (dolist (n names)
+                            (add-entry w n :data (if (eql #\/ (last-char n)) nil n))))))
+          (is (equal (normalize names format) (normalize (archive-entry-names archive) format))
+              "~S: ~S" format (archive-entry-names archive)))))))
+
+(test locale-has-a-utf-8-codeset
+  (load-libraries)
+  (is (libarchive::utf-8-locale-name-p (libarchive::setlocale-ctype nil))))

@@ -34,15 +34,76 @@ first so that the Homebrew build wins over the system one.")
   (:windows (:or "archive.dll" "libarchive.dll"))
   (t (:default "libarchive")))
 
+;;; The C locale.
+;;;
+;;; libarchive converts every name between the archive's charset and the
+;;; *process locale's* multibyte encoding, and SBCL never calls setlocale, so a
+;;; Lisp process runs in the "C" locale, where nothing outside ASCII converts.
+;;; Under it a name like "café" is broken in every writer: pax dereferences the
+;;; failed conversion's NULL and takes the process down, ustar and gnutar
+;;; silently write an empty name, 7-Zip writes a damaged archive, cpio refuses
+;;; the entry, and extraction cannot create the file. bsdtar avoids all of this
+;;; by calling setlocale(LC_ALL, "") first thing; this does the same for
+;;; LC_CTYPE alone, which is the only category libarchive's conversions use.
+
+(defvar *ensure-utf-8-locale* t
+  "If true (the default), LOAD-LIBRARIES makes sure the process's LC_CTYPE has a
+UTF-8 codeset, switching it if need be: first to the environment's own locale
+(LC_ALL, LC_CTYPE, LANG), then to C.UTF-8 or en_US.UTF-8. libarchive cannot
+handle non-ASCII names otherwise. Only LC_CTYPE is changed, and SBCL's own
+streams do not depend on it. Bind or set this to NIL before the first call
+into libarchive to leave the locale alone.")
+
+(defconstant +lc-ctype+ #+linux 0 #-linux 2
+  "LC_CTYPE: 0 in glibc and musl, 2 in macOS and the BSDs.")
+
+(defun utf-8-locale-name-p (name)
+  (and name
+       (or (search "UTF-8" name :test #'char-equal)
+           (search "UTF8" name :test #'char-equal))
+       t))
+
+(defun setlocale-ctype (name)
+  "setlocale(LC_CTYPE, NAME), NAME NIL to query; the resulting locale name or NIL."
+  (if name
+      (cffi:foreign-funcall "setlocale" :int +lc-ctype+ :string name :string)
+      (cffi:foreign-funcall "setlocale" :int +lc-ctype+ :pointer (cffi:null-pointer) :string)))
+
+(defun ensure-utf-8-locale ()
+  "Give LC_CTYPE a UTF-8 codeset if it lacks one; return the locale name in effect."
+  (let ((current (setlocale-ctype nil)))
+    (if (utf-8-locale-name-p current)
+        current
+        (or (loop for candidate in '("" "C.UTF-8" "en_US.UTF-8" "UTF-8")
+                  for set = (setlocale-ctype candidate)
+                  when (utf-8-locale-name-p set)
+                    return set)
+            (progn
+              (setlocale-ctype current)
+              (warn "No UTF-8 locale is available, so libarchive will mangle or ~
+                     refuse names outside ASCII. LC_CTYPE is ~S." current)
+              current)))))
+
 (defvar *libraries-loaded* nil)
 
+;;; Several threads may make their first libarchive call at the same moment, and
+;;; loading is not something to do twice at once: two concurrent dlopens and
+;;; setlocales crashed in archive_write_new. The flag is checked again under the
+;;; lock, so once loaded the common path takes no lock at all.
+(defvar *load-lock* (sb-thread:make-mutex :name "libarchive load-libraries"))
+
 (defun load-libraries ()
-  "Open libarchive if it is not already open. Idempotent; returns T."
+  "Open libarchive if it is not already open, and see *ENSURE-UTF-8-LOCALE*.
+Idempotent and thread-safe; returns T."
   (unless *libraries-loaded*
-    (let ((cffi:*foreign-library-directories*
-            (append *library-directories* cffi:*foreign-library-directories*)))
-      (cffi:load-foreign-library 'libarchive))
-    (setf *libraries-loaded* t))
+    (sb-thread:with-mutex (*load-lock*)
+      (unless *libraries-loaded*
+        (let ((cffi:*foreign-library-directories*
+                (append *library-directories* cffi:*foreign-library-directories*)))
+          (cffi:load-foreign-library 'libarchive))
+        (when *ensure-utf-8-locale*
+          (ensure-utf-8-locale))
+        (setf *libraries-loaded* t))))
   t)
 
 ;;; A restored image must not trust the flag it was dumped with.

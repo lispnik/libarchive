@@ -165,7 +165,9 @@ trailer is written, which is what to do after an error part-way through."))
   (%archive-format (live-pointer handle)))
 
 (defun archive-filter-names (handle)
-  "Names of the filters (compressions) in effect, outermost first, excluding \"none\"."
+  "Names of the filters (compressions) in effect, excluding \"none\": the one
+nearest the archive format first, the outermost last. For a .tar.gz.b64 that is
+(\"gzip\" \"uu\"), the order :FILTERS takes them in."
   (let ((p (live-pointer handle)))
     (loop for i below (%archive-filter-count p)
           for name = (%archive-filter-name p i)

@@ -2,6 +2,10 @@
 #
 #   make test       -- run the FiveAM suite
 #   make check      -- test, then load everything and report the library version
+#   make examples   -- run every program in examples/ (each checks its own output)
+#   make example NAME=quickstart  -- run one
+#   make la         -- build the la archive tool at bin/la
+#   make cli-test   -- la's FiveAM suite, then ci/cli-smoke.sh against bin/la
 #   make generate   -- regenerate the raw layer from the installed headers
 #   make clean      -- drop this tree's SBCL fasl cache
 #
@@ -19,8 +23,13 @@ LIBARCHIVE_INCLUDE ?= $(shell brew --prefix libarchive 2>/dev/null || echo /usr)
 BOOT := --eval "(require :asdf)" \
         --eval "(asdf:initialize-source-registry \`(:source-registry (:tree ,(truename \"./\")) :ignore-inherited-configuration))"
 
-.PHONY: test check generate clean help
+.PHONY: test check examples example la cli-test generate clean help
 .DEFAULT_GOAL := test
+
+# Each example in its own fresh image, so none can lean on another's definitions.
+EXAMPLES := $(wildcard examples/*.lisp)
+RUN_EXAMPLE = $(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:load-system :libarchive)" \
+                --load $(1) --eval "(sb-ext:exit)"
 
 test:
 	$(SBCL) $(SBCL_FLAGS) $(BOOT) \
@@ -34,10 +43,36 @@ check: test
 	            (let ((n 0)) (do-external-symbols (s :libarchive) (declare (ignore s)) (incf n)) n))" \
 	  --eval "(sb-ext:exit)"
 
+examples:
+	@set -e; for f in $(EXAMPLES); do \
+	  echo "==> $$f"; $(call RUN_EXAMPLE,$$f); echo; \
+	done
+
+example:
+	$(call RUN_EXAMPLE,examples/$(NAME).lisp)
+
+# bin/la: the libarchive/cli system dumped as an executable. libarchive itself
+# is opened when la first runs, not in the image, so the binary uses whatever
+# libarchive the machine it runs on has.
+LA_SOURCES := $(wildcard cli/*.lisp src/*.lisp) libarchive.asd
+
+la: bin/la
+
+bin/la: $(LA_SOURCES)
+	@mkdir -p bin
+	$(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:make :libarchive/cli)" --eval "(sb-ext:exit)"
+	@ls -lh bin/la
+
+cli-test: bin/la
+	$(SBCL) $(SBCL_FLAGS) $(BOOT) \
+	  --eval "(asdf:test-system :libarchive/cli)" --eval "(sb-ext:exit)"
+	ci/cli-smoke.sh bin/la
+
 generate:
 	$(PYTHON) -I tools/gen-ffi.py $(LIBARCHIVE_INCLUDE) src/
 
 clean:
+	rm -rf bin
 	rm -rf $(HOME)/.cache/common-lisp/*/$(subst /,_,$(CURDIR))
 
 help:

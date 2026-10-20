@@ -26,6 +26,10 @@ ocicl install                  # restores ocicl/ from ocicl.csv
 
 ## Use
 
+The [tutorial](docs/tutorial.md) walks through everything below in more depth, and
+[`examples/`](examples/) has a runnable, self-checking program for each part of it
+(`make examples`).
+
 ```lisp
 (use-package :libarchive)
 
@@ -111,14 +115,50 @@ cffi-callback-closures) aren't needed, and neither is libffi.
   the traditional 10240-byte blocking. libarchive would otherwise append zeros after the
   compressed stream, and its own zstd reader rejects those zeros.
 - `archive-directory` stores hard links as separate copies.
+- The first call into libarchive sets `LC_CTYPE` to a UTF-8 locale if it isn't one:
+  SBCL never calls `setlocale`, and in the "C" locale libarchive mangles or refuses
+  non-ASCII names (the pax writer crashes on them). Set `*ensure-utf-8-locale*` to NIL
+  first to opt out.
+- On macOS libarchive decomposes names it reads (NFD); the entry accessors recompose
+  them to NFC, so a name reads back as written.
 - Entry points newer than the library you load can be probed with
   `(foreign-function-available-p "archive_...")`.
+
+## la: the command-line tool
+
+`libarchive/cli` builds **`la`**, one archive tool for every format libarchive
+handles (`make la` → `bin/la`):
+
+```sh
+la a site.tar.zst site/ README.md     # create: format and compression from the name
+la a -x '*.o' -l 9 src.zip src/        # exclude, compression level
+la a -p secret private.zip notes/      # AES-256 encrypted zip
+la a notes.txt.xz notes.txt            # a bare compressed file
+la x download.tar.gz                   # one top-level entry: extracted here as is
+la x photos.zip -C ~/Pictures          # several: into ~/Pictures/photos/ (photos-1/, ...)
+la x notes.txt.xz                      # decompresses to notes.txt
+la l -l release.7z                     # list; t tests, i describes
+curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F)
+```
+
+**Behaviour:**
+- `la x` never overwrites existing files without `--overwrite`. It reports each
+  one it skips and exits 1.
+- It refuses entries that would escape the target directory.
+- It names the entry that failed, and suggests `-p` when a passphrase is missing.
+
+Exit codes: 0 for success, 1 when something failed, 2 for a usage error. The binary opens
+libarchive when it runs, so it uses whichever libarchive the machine has.
+`la --help` and `la <command> --help` describe every option.
 
 ## Develop
 
 ```sh
 make test       # FiveAM suite (hermetic source registry: this tree + ocicl/)
 make check      # test + load report
+make examples   # run examples/*.lisp, each checking its own output
+make la         # build bin/la
+make cli-test   # la's suite, plus ci/cli-smoke.sh against bin/la
 make generate   # regenerate src/ffi-*.lisp, constants.lisp from the installed headers
 ```
 
