@@ -38,6 +38,15 @@
 
 (defun stdio-p (name) (string= name "-"))
 
+(defun lexists-p (path)
+  "True if PATH exists, as a dangling symlink too."
+  (handler-case (progn (sb-posix:lstat (uiop:native-namestring path)) t)
+    (sb-posix:syscall-error () nil)))
+
+(defun symlink-p (path)
+  (handler-case (sb-posix:s-islnk (sb-posix:stat-mode (sb-posix:lstat (uiop:native-namestring path))))
+    (sb-posix:syscall-error () nil)))
+
 (defun display-name (name)
   (if (stdio-p name) "standard input" name))
 
@@ -68,12 +77,61 @@ archive twice (once to find its top-level names), and zip and 7z want to seek."
           (fail "~A is a directory, not an archive" name))
         (funcall function path))))
 
-;;; Passphrases: the option, else the environment, else none.
+;;; Passphrases: -p, else LA_PASSPHRASE, else -- for reading -- a prompt on the
+;;; terminal. A PASSPHRASE-SOURCE outlives the readers of one command: `la x'
+;;; opens the archive twice, and the passphrase typed for the first is tried
+;;; first by the second, so it is asked for once.
+
+(defvar *prompt-for-passphrase* t
+  "Whether to ask on /dev/tty when an archive needs a passphrase and none was
+given. The tests turn it off; without a terminal there is nobody to ask anyway.")
 
 (defun passphrase-from (cmd)
+  "The passphrase given with -p or LA_PASSPHRASE, or NIL."
   (or (clingon:getopt cmd :passphrase)
       (let ((env (uiop:getenv "LA_PASSPHRASE")))
         (and env (plusp (length env)) env))))
+
+(defstruct (passphrase-source (:constructor %make-passphrase-source))
+  given                                 ; -p or LA_PASSPHRASE
+  remembered                            ; the last one typed at the prompt
+  label)                                ; what to call the archive when asking
+
+(defun passphrase-source (cmd label)
+  (%make-passphrase-source :given (passphrase-from cmd) :label label))
+
+(defun terminal-available-p ()
+  (ignore-errors (with-open-file (tty "/dev/tty") (declare (ignore tty)) t)))
+
+(defun read-passphrase-from-terminal (label)
+  "Ask on /dev/tty, without echo. NIL if the answer is empty."
+  (with-open-file (tty "/dev/tty" :direction :io :if-exists :append)
+    (format tty "Passphrase for ~A: " label)
+    (finish-output tty)
+    (flet ((stty (arg) (ignore-errors (uiop:run-program (list "stty" arg) :input #p"/dev/tty"))))
+      (stty "-echo")
+      (unwind-protect
+           (let ((line (read-line tty nil "")))
+             (terpri tty)
+             (and (plusp (length line)) line))
+        (stty "echo")))))
+
+(defun reader-passphrase (source)
+  "What to give OPEN-ARCHIVE-READER as :PASSPHRASE for one more reader."
+  (cond ((null source) nil)
+        ((passphrase-source-given source))
+        ((and *prompt-for-passphrase* (terminal-available-p))
+         ;; libarchive calls this each time it needs another passphrase to try:
+         ;; first the one already typed, then up to three asked for.
+         (let ((calls 0))
+           (lambda ()
+             (incf calls)
+             (let ((remembered (passphrase-source-remembered source)))
+               (cond ((and (= calls 1) remembered))
+                     ((> calls (if remembered 4 3)) nil)
+                     (t (setf (passphrase-source-remembered source)
+                              (read-passphrase-from-terminal
+                               (passphrase-source-label source)))))))))))
 
 ;;; Globs, for --exclude: * matches any run of characters (including /), ?
 ;;; any one character. A pattern matches a path if it matches the whole path or

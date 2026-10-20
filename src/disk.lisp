@@ -48,8 +48,10 @@ FLAGS is a list of keywords from *EXTRACT-FLAGS* (:owner :perm :time :acl
 Entries with absolute names or .. components are always refused.
 
 FILTER, if given, is called with each entry and extracts it only if it returns
-true. PROGRESS, if given, is called periodically during extraction with the
-number of (compressed) bytes consumed so far.
+true. It may also change the entry's pathname (and hardlink) to extract it
+under another name; the safety checks apply to the new names. PROGRESS, if
+given, is called periodically during extraction with the number of
+(compressed) bytes consumed so far.
 
 Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart."
   (let ((root (uiop:native-namestring
@@ -68,9 +70,11 @@ Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart.
                       (loop for e = (next-entry reader)
                             while e
                             do (restart-case
-                                   (let ((name (entry-pathname e))
-                                         (link (entry-hardlink e)))
-                                     (when (or (null filter) (funcall filter e))
+                                   ;; The filter may rename the entry (strip a leading
+                                   ;; directory, say), so its names are read after it.
+                                   (when (or (null filter) (funcall filter e))
+                                     (let ((name (entry-pathname e))
+                                           (link (entry-hardlink e)))
                                        (check-extract-name name)
                                        (when link (check-extract-name link))
                                        (setf (entry-pathname e) (concatenate 'string root name))

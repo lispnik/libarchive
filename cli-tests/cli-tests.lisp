@@ -23,7 +23,9 @@
   "Run la with ARGS; return its exit code, standard output and standard error."
   (let ((out (make-string-output-stream))
         (err (make-string-output-stream)))
-    (let ((code (let ((*standard-output* out) (*error-output* err))
+    (let ((code (let ((*standard-output* out) (*error-output* err)
+                      ;; Never stop to ask at the terminal from a test.
+                      (libarchive/cli::*prompt-for-passphrase* nil))
                   (libarchive/cli:run args))))
       (values code (get-output-stream-string out) (get-output-stream-string err)))))
 
@@ -265,3 +267,59 @@
     (is (eql 2 (la "x")))
     (is (eql 2 (la "x" "--bogus" "p.tar.gz")))
     (is (eql 0 (la "--help")))))
+
+(test strip-components
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "p.tar" "proj")
+    ;; proj/README and proj/src/ become README and src/: two roots now, so
+    ;; they get a directory of their own.
+    (la-ok "x" "--strip-components" "1" "p.tar" "-C" "s1")
+    (is (string= "read me" (read-file "s1/p/README")))
+    (is (exists "s1/p/src/main.c"))
+    ;; Strip two: only src's files are left, one root each.
+    (la-ok "x" "--strip-components" "2" "p.tar" "-C" "s2")
+    (is (exists "s2/p/main.c"))
+    (is (not (exists "s2/p/README")))
+    (is (eql 2 (la "x" "--strip-components" "-1" "p.tar")))))
+
+(test failed-entries-leave-no-files
+  (in-scratch-directory
+    (make-project)
+    ;; Encrypted with no passphrase: each file is created, then fails.
+    (la-ok "a" "-p" "pw" "s.zip" "proj")
+    (is (eql 1 (la "x" "s.zip" "-C" "out")))
+    (is (not (exists "out/proj/README")))
+    (is (not (exists "out/proj/src/main.c")))))
+
+(test symlink-arguments-are-stored-as-symlinks
+  (in-scratch-directory
+    (make-project)
+    (uiop:run-program (list "ln" "-s" "proj/README"
+                            (uiop:native-namestring (merge-pathnames "readme-link"))))
+    (la-ok "a" "l.tar" "readme-link")
+    (let ((long (la-ok "l" "-l" "l.tar")))
+      (is (search "readme-link -> proj/README" long) "~A" long))))
+
+(test passphrase-typed-once-is-remembered
+  ;; la x reads the archive twice; a passphrase given at the prompt for the
+  ;; first pass is tried first in the second, so it is asked for only once.
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-p" "pw" "s.zip" "proj")
+    (let ((asked 0))
+      (flet ((answer (label) (declare (ignore label)) (incf asked) "pw"))
+        (let ((libarchive/cli::*prompt-for-passphrase* t))
+          (sb-int:encapsulate 'libarchive/cli::read-passphrase-from-terminal 'test
+                              (lambda (f label) (declare (ignore f)) (answer label)))
+          (sb-int:encapsulate 'libarchive/cli::terminal-available-p 'test
+                              (lambda (f) (declare (ignore f)) t))
+          (unwind-protect
+               (let ((code (let ((*standard-output* (make-broadcast-stream))
+                                 (*error-output* (make-broadcast-stream)))
+                             (libarchive/cli:run (list "x" "s.zip" "-C" "out")))))
+                 (is (eql 0 code)))
+            (sb-int:unencapsulate 'libarchive/cli::read-passphrase-from-terminal 'test)
+            (sb-int:unencapsulate 'libarchive/cli::terminal-available-p 'test)))
+        (is (string= "read me" (read-file "out/proj/README")))
+        (is (= 1 asked) "asked ~D times" asked)))))

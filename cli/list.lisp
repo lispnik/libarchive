@@ -2,8 +2,10 @@
 
 (in-package #:libarchive/cli)
 
-(defun reader-for (archive cmd)
-  (open-archive-reader archive :formats '(:all :raw) :passphrase (passphrase-from cmd)))
+(defun reader-for (archive cmd name)
+  (open-archive-reader archive :formats '(:all :raw)
+                               :passphrase (reader-passphrase
+                                            (passphrase-source cmd (display-name name)))))
 
 (defun one-archive (cmd verb)
   (let ((args (clingon:command-arguments cmd)))
@@ -26,7 +28,7 @@
     (call-with-input-archive
      name
      (lambda (archive)
-       (let ((r (reader-for archive cmd)))
+       (let ((r (reader-for archive cmd name)))
          (unwind-protect
               (do-archive-entries (e r)
                 (write-line (if long (long-line e) (entry-pathname e))))
@@ -43,7 +45,7 @@
     (call-with-input-archive
      name
      (lambda (archive)
-       (let ((r (reader-for archive cmd))
+       (let ((r (reader-for archive cmd name))
              (buffer (make-array 65536 :element-type '(unsigned-byte 8))))
          (unwind-protect
               (do-archive-entries (e r)
@@ -72,7 +74,7 @@
     (call-with-input-archive
      name
      (lambda (archive)
-       (let ((r (reader-for archive cmd))
+       (let ((r (reader-for archive cmd name))
              (counts '()) (total 0) (unknown-sizes 0) (roots '()) (encrypted nil))
          (unwind-protect
               (progn

@@ -91,3 +91,63 @@ jobs:
 
       - name: Test
         run: ci/test.sh
+
+      # ci/test.sh has built and tested bin/la. Package it on every run, so any
+      # build can be downloaded and tried, and the release job below has it.
+      - name: Package la
+        run: |
+          mkdir -p dist
+          cp bin/la LICENSE README.md dist/
+          tar -czf la-${{ matrix.os }}-${{ matrix.arch }}.tar.gz -C dist la LICENSE README.md
+          ls -l la-*.tar.gz
+
+      - name: Upload la
+        uses: actions/upload-artifact@v7
+        with:
+          name: la-${{ matrix.os }}-${{ matrix.arch }}
+          path: la-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  # A v* tag publishes the three binaries, once every platform has passed.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: la-*
+          merge-multiple: true
+          path: dist
+
+      - name: Make the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eux
+          ls -l dist
+          cat > notes.md <<'NOTES'
+          `la` extracts, creates, lists and tests archives in every format libarchive
+          handles. Each tarball holds the `la` binary (an SBCL image), LICENSE and README.
+
+          `la` opens libarchive when it runs, so it needs one installed:
+
+          | Download | Needs |
+          |---|---|
+          | `la-macos-arm64.tar.gz` | macOS 15 or later on Apple silicon; `brew install libarchive` |
+          | `la-linux-x86_64.tar.gz` | glibc 2.39 or later (Ubuntu 24.04+); `apt install libarchive13t64` |
+          | `la-linux-aarch64.tar.gz` | the same, on arm64 |
+
+          ```sh
+          tar -xzf la-*.tar.gz && sudo install la /usr/local/bin/
+          ```
+
+          On macOS a downloaded binary is quarantined; clear it with
+          `xattr -d com.apple.quarantine la`.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/la-*.tar.gz \
+            --title "la $GITHUB_REF_NAME" --notes-file notes.md --verify-tag

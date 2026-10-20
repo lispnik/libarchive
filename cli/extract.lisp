@@ -19,21 +19,28 @@
          (root (subseq name 0 (position #\/ name))))
     (and (plusp (length root)) (string/= root ".") root)))
 
-(defun survey (archive passphrase)
+(defun strip-components (name count)
+  "NAME without its first COUNT directories, like tar --strip-components; NIL if
+nothing is left. A trailing / stays."
+  (if (zerop count)
+      name
+      (let* ((name (strip-dot-slash name))
+             (parts (remove "" (uiop:split-string name :separator "/") :test #'string=)))
+        (and (> (length parts) count)
+             (format nil "~{~A~^/~}~:[~;/~]" (nthcdr count parts)
+                     (char= #\/ (char name (1- (length name)))))))))
+
+(defun survey (archive passphrase strip)
   "The archive's top-level names, and whether it is a bare compressed file."
-  (with-archive-reader (r archive :formats '(:all :raw) :passphrase passphrase)
+  (with-archive-reader (r archive :formats '(:all :raw) :passphrase (reader-passphrase passphrase))
     (let ((roots '()))
       (do-archive-entries (e r)
-        (let ((root (entry-root (entry-pathname e))))
+        (let* ((name (strip-components (entry-pathname e) strip))
+               (root (and name (entry-root name))))
           (when root (pushnew root roots :test #'string=))))
       (values (nreverse roots)
               (equal (archive-format-name r) "raw")
               (archive-filter-names r)))))
-
-(defun lexists-p (path)
-  "True if PATH exists, as a dangling symlink too."
-  (handler-case (progn (sb-posix:lstat (uiop:native-namestring path)) t)
-    (sb-posix:syscall-error () nil)))
 
 (defun fresh-directory (parent stem)
   "PARENT/STEM/, or PARENT/STEM-1/, -2, ... whichever does not exist yet."
@@ -58,7 +65,7 @@
     (when (and (lexists-p out) (not overwrite))
       (fail "~A already exists, not overwritten (use --overwrite)" (relative-display out)))
     (ensure-directories-exist out)
-    (with-archive-reader (r archive :formats '(:raw) :passphrase passphrase)
+    (with-archive-reader (r archive :formats '(:raw) :passphrase (reader-passphrase passphrase))
       (next-entry r)
       (with-open-file (s out :direction :output :element-type '(unsigned-byte 8)
                              :if-exists :supersede)
@@ -71,11 +78,13 @@
         (*quiet* (clingon:getopt cmd :quiet))
         (verbose (clingon:getopt cmd :verbose))
         (overwrite (clingon:getopt cmd :overwrite))
-        (passphrase (passphrase-from cmd))
+        (strip (or (clingon:getopt cmd :strip-components) 0))
         (destination (user-directory (or (clingon:getopt cmd :directory) "."))))
     (unless (= 1 (length args))
       (usage-error "x takes one archive (see la x --help)"))
-    (let ((name (first args)))
+    (when (minusp strip) (usage-error "--strip-components takes a count of 0 or more"))
+    (let* ((name (first args))
+           (passphrase (passphrase-source cmd (display-name name))))
       (call-with-input-archive
        name
        (lambda (archive)
@@ -84,20 +93,21 @@
              ;; libarchive guess: a one-line text file looks enough like an
              ;; mtree manifest that format detection takes it for one.
              (extract-raw archive name destination passphrase overwrite)
-             (multiple-value-bind (roots raw filters) (survey archive passphrase)
+             (multiple-value-bind (roots raw filters) (survey archive passphrase strip)
                (cond ((and raw filters)
                       (extract-raw archive name destination passphrase overwrite))
                      (raw (fail "~A is not an archive" (display-name name)))
                      (t (extract-into archive name destination roots passphrase overwrite
-                                      verbose))))))))))
+                                      verbose strip))))))))))
 
-(defun extract-into (archive name destination roots passphrase overwrite verbose)
+(defun extract-into (archive name destination roots passphrase overwrite verbose strip)
   (let* ((target (if (> (length roots) 1)
                      (fresh-directory destination (if (stdio-p name) "archive" (archive-stem name)))
                      destination))
          (skipped 0)
          (failed 0)
          (current nil)                  ; the entry being extracted, for messages
+         (current-file nil)             ; ...and the file it creates, if it is new
          (extracted
            (handler-bind ((archive-error
                             (lambda (c)
@@ -108,18 +118,34 @@
                                              ;; Refusals already name the entry.
                                              (and current (not (search current message)) current)
                                              message
-                                             (and (search "assphrase" message) (null passphrase)))
+                                             (and (search "assphrase" message)
+                                                  (null (passphrase-source-given passphrase))))
                                   (incf failed)
+                                  ;; Do not leave behind an empty or partial file
+                                  ;; that was not there before.
+                                  (when current-file
+                                    (ignore-errors (delete-file current-file))
+                                    (setf current-file nil))
                                   (invoke-restart restart))))))
              (extract-archive
               archive target
-              :passphrase passphrase
+              :passphrase (reader-passphrase passphrase)
               :flags (append (if overwrite '(:unlink) '()) *default-extract-flags*)
               :filter (lambda (e)
-                        (let ((path (merge-pathnames
-                                     (uiop:parse-native-namestring (strip-dot-slash (entry-pathname e)))
-                                     target)))
-                          (cond ((and (not overwrite)
+                        (setf current nil current-file nil)
+                        (let* ((stored (strip-components (entry-pathname e) strip))
+                               (link (and stored (entry-hardlink e)
+                                          (strip-components (entry-hardlink e) strip)))
+                               (path (and stored
+                                          (merge-pathnames
+                                           (uiop:parse-native-namestring (strip-dot-slash stored))
+                                           target))))
+                          (when (and stored (plusp strip))
+                            (setf (entry-pathname e) stored)
+                            (when (entry-hardlink e)
+                              (setf (entry-hardlink e) (or link ""))))
+                          (cond ((null stored) nil)  ; stripped away entirely
+                                ((and (not overwrite)
                                       (not (eq (entry-type e) :directory))
                                       (lexists-p path))
                                  (warn-user "~A: already exists, not overwritten (use --overwrite)"
@@ -128,6 +154,8 @@
                                  nil)
                                 (t
                                  (setf current (entry-pathname e))
+                                 (when (and (eq (entry-type e) :regular) (not (lexists-p path)))
+                                   (setf current-file path))
                                  (when verbose (format t "~A~%" current))
                                  t))))))))
     (note "~A: ~D entr~:@P extracted~@[ into ~A~]~@[, ~D skipped~]~@[, ~D failed~]"
@@ -150,6 +178,9 @@
                    (clingon:make-option :string :short-name #\p :long-name "passphrase"
                                                 :key :passphrase :parameter "PASS"
                                                 :description "passphrase for encrypted entries")
+                   (clingon:make-option :integer :long-name "strip-components" :key :strip-components
+                                                 :parameter "N"
+                                                 :description "drop the first N directories of every name")
                    (clingon:make-option :flag :long-name "overwrite" :key :overwrite
                                               :description "replace files that already exist")
                    (clingon:make-option :flag :short-name #\v :long-name "verbose" :key :verbose

@@ -92,14 +92,26 @@ ARCHIVE-NAME's extension."
                        (loop for input in inputs
                              for disk in disk-paths
                              for name = (stored-name input)
-                             do (if (eq format :raw)
-                                    (progn (add-entry w (or name (file-namestring disk)) :data disk)
-                                           (incf count))
+                             do (cond
+                                  ((eq format :raw)
+                                   (add-entry w (or name (file-namestring disk)) :data disk)
+                                   (incf count))
+                                  ;; A symlink named on the command line is stored as
+                                  ;; a symlink, as tar does, not as what it points to.
+                                  ((symlink-p disk)
+                                   (let ((stat (sb-posix:lstat (uiop:native-namestring disk))))
+                                     (add-entry w (or name (file-namestring disk))
+                                                :symlink (sb-posix:readlink (uiop:native-namestring disk))
+                                                :mtime (+ (sb-posix:stat-mtime stat)
+                                                          (encode-universal-time 0 0 0 1 1 1970 0))))
+                                   (when verbose (format t "~A~%" (or name (file-namestring disk))))
+                                   (incf count))
+                                  (t
                                     (incf count
                                           (archive-directory
                                            disk w :name name :read-disk-flags read-disk-flags
                                            :directories (not (member format *formats-without-directories*))
-                                           :filter (entry-filter disk name self excludes verbose)))))))
+                                           :filter (entry-filter disk name self excludes verbose))))))))
                    (setf ok t))
               ;; A failed archive is removed rather than left half-written.
               (when (and target (not ok))

@@ -159,3 +159,21 @@
                         (with-archive-to-octets (w :format :warc)
                           (archive-directory tree w :directories nil)))
                        #'string<))))))
+
+(test extract-filter-can-rename
+  (with-temp-directory (dir)
+    (let ((archive (with-archive-to-octets (w :format :ustar)
+                     (add-entry w "pkg-1.0/")
+                     (add-entry w "pkg-1.0/README" :data "r")
+                     (add-entry w "pkg-1.0/../../out" :data "x")))
+          (out (merge-pathnames "out/" dir)))
+      (let ((names (handler-bind ((archive-error (lambda (c) (invoke-restart (find-restart 'skip-entry c)))))
+                     (extract-archive archive out
+                                      :filter (lambda (e)
+                                                (let ((n (entry-pathname e)))
+                                                  (when (> (length n) 8)
+                                                    (setf (entry-pathname e) (subseq n 8))
+                                                    t)))))))
+        ;; Renamed, and the renamed ../out is still refused.
+        (is (equal '("README") names))
+        (is (string= "r" (uiop:read-file-string (merge-pathnames "README" out))))))))

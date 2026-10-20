@@ -137,6 +137,7 @@ la a notes.txt.xz notes.txt            # a bare compressed file
 la x download.tar.gz                   # one top-level entry: extracted here as is
 la x photos.zip -C ~/Pictures          # several: into ~/Pictures/photos/ (photos-1/, ...)
 la x notes.txt.xz                      # decompresses to notes.txt
+la x --strip-components 1 pkg.tar.gz   # drop the leading pkg-1.0/
 la l -l release.7z                     # list; t tests, i describes
 curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F)
 ```
@@ -145,7 +146,14 @@ curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F
 - `la x` never overwrites existing files without `--overwrite`. It reports each
   one it skips and exits 1.
 - It refuses entries that would escape the target directory.
-- It names the entry that failed, and suggests `-p` when a passphrase is missing.
+- It names the entry that failed. A file it created and then failed to fill is removed.
+- **Passphrases:** without `-p` or `LA_PASSPHRASE`, an encrypted archive is asked for
+  on the terminal, once per command.
+- **Symlinks:** a symlink named on `la a`'s command line is stored as a symlink, as tar
+  does; name `link/` to store what it points to.
+
+Prebuilt binaries for macOS arm64 and Linux x86_64/aarch64 are on the
+[releases page](https://github.com/lispnik/libarchive/releases).
 
 Exit codes: 0 for success, 1 when something failed, 2 for a usage error. The binary opens
 libarchive when it runs, so it uses whichever libarchive the machine has.
@@ -162,4 +170,4 @@ make cli-test   # la's suite, plus ci/cli-smoke.sh against bin/la
 make generate   # regenerate src/ffi-*.lisp, constants.lisp from the installed headers
 ```
 
-MIT licensed.
+MIT licensed; see [LICENSE](LICENSE).
