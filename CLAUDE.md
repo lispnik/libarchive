@@ -34,6 +34,11 @@ is absent, then `make test`, `make check` and `make examples`. It runs on Ubuntu
 `mode_t`/`dev_t` sizes) and on macOS 15 arm64 (Homebrew). `ocicl/` is gitignored, and
 `ocicl.csv` pins it.
 
+Every CI run uploads `la-<os>-<arch>.tar.gz` (bin/la, LICENSE, README) as an
+artifact. Pushing a `v*` tag also runs the `release` job, which publishes the three as
+a GitHub release. Bump `*version*` in `cli/main.lisp` and `:version` in the `.asd` first.
+The ocicl request is ocicl/request-system-additions-here#78.
+
 The Makefile's `BOOT` is a **hermetic** source registry: this tree as a `:tree`,
 ignoring inherited configuration. Copy it at a REPL rather than relying on `~/.sbclrc`.
 
