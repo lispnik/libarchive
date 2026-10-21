@@ -27,15 +27,15 @@ the version, so that the docs can be made where it cannot be loaded."
                 *version*)
    :description "extract, create, list and test archives of every kind libarchive knows"
    :long-description
-   "la x ARCHIVE [ENTRY...]  extract (several roots: into a new directory)
-la a ARCHIVE FILE...     create; the format comes from the name
-la a -r ARCHIVE FILE...  add to it, replacing entries of the same name
-la rm ARCHIVE ENTRY...   remove entries
-la l ARCHIVE             list (-l for the long form)
-la cat ARCHIVE [ENTRY...] write files' contents to standard output
-la t ARCHIVE             read everything, checking the data
-la i ARCHIVE             format, compression and sizes
-la diff ARCHIVE          compare with the files here (-C DIR: there)
+   "la x ARCHIVE [ENTRY...]    extract (several roots: a new directory)
+la a ARCHIVE FILE...       create; the format comes from the name
+la a -r ARCHIVE FILE...    add, replacing entries of the same name
+la rm ARCHIVE ENTRY...     remove entries
+la l ARCHIVE               list (-l for the long form)
+la cat ARCHIVE [ENTRY...]  write files' contents to standard output
+la t ARCHIVE               read everything, checking the data
+la i ARCHIVE               format, compression and sizes
+la diff ARCHIVE            compare with the files here (-C: there)
 
 Writes tar (pax, ustar, gnu, v7), zip, 7z, cpio, iso9660, xar,
 ar, shar, mtree and warc; reads those and rar, cab and lha too.
