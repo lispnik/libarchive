@@ -8,7 +8,6 @@
 set -eu
 
 TAG=$1
-VERSION=${TAG#v}
 REPO=lispnik/libarchive
 SUMS=$(gh release download "$TAG" -R "$REPO" -p SHA256SUMS -O -)
 sum() { echo "$SUMS" | awk -v f="la-$1.tar.gz" '$2 == f { print $1 }'; }
@@ -23,7 +22,6 @@ cat <<FORMULA
 class La < Formula
   desc "Extract, create, list and compare archives in every format libarchive handles"
   homepage "https://github.com/$REPO"
-  version "$VERSION"
   license "MIT"
 
   on_macos do
