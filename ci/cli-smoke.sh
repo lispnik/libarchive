@@ -24,6 +24,8 @@ check() {  # check DESCRIPTION COMMAND...
     fi
 }
 has() { command -v "$1" >/dev/null 2>&1; }
+# cmp is in diffutils, which a bare container may lack; cksum is coreutils.
+same() { [ "$(cksum < "$1")" = "$(cksum < "$2")" ]; }
 
 mkdir -p proj/src
 echo "read me" > proj/README
@@ -40,7 +42,7 @@ check "l lists 5 entries"  sh -c "test \$('$LA' l p.tar.zst | wc -l) -eq 5"
 check "t passes"           "$LA" t -q p.tar.zst
 check "x multi-root"       "$LA" x -q p.tar.zst -C out
 check "  into out/p/"      test -f out/p/proj/src/main.c
-check "  content intact"   cmp proj/src/main.c out/p/proj/src/main.c
+check "  content intact"   same proj/src/main.c out/p/proj/src/main.c
 
 check "l | head is not an error" sh -c "'$LA' l -l p.tar.zst 2>err | head -1 >/dev/null; test ! -s err"
 
@@ -58,7 +60,7 @@ check "-T threads"           sh -c "'$LA' a -q -T 0 threads.tar.zst proj && '$LA
 # Bare compression both ways.
 check "a .gz of one file"  "$LA" a -q loose.txt.gz loose.txt
 check "x .gz decompresses" "$LA" x -q loose.txt.gz -C gz
-check "  to loose.txt"     cmp loose.txt gz/loose.txt
+check "  to loose.txt"     same loose.txt gz/loose.txt
 
 # Standard output and input.
 check "a to stdout"        sh -c "'$LA' a -q -F tar -z gzip - proj > piped.tgz"
@@ -73,7 +75,7 @@ check "refuses to clobber" sh -c "'$LA' a p.tar.zst loose.txt; test \$? -eq 1"
 check "failed a leaves no file" sh -c "'$LA' a broken.tar proj nonesuch; test \$? -eq 1 && test ! -e broken.tar"
 
 # Interoperability with the system's tools.
-if has tar; then
+if has tar && has gzip; then
     check "system tar reads la's .tar.gz" sh -c "'$LA' a -q sys.tar.gz proj && tar -tzf sys.tar.gz | grep -q proj/src/main.c"
     check "la reads system tar's .tar.gz" sh -c "tar -czf fromtar.tar.gz proj && '$LA' x -q fromtar.tar.gz -C t && test -f t/proj/README"
 fi
