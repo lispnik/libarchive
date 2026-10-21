@@ -49,20 +49,27 @@
         ;; One passphrase.
         (assert (search "palm tree" (cdr (first (read-all zip :passphrase "hunter2")))))
 
-        ;; Several, tried in turn until one works.
-        (assert (= 2 (length (read-all zip :passphrase '("password" "letmein" "hunter2")))))
+        ;; Wrong passphrases. ZipCrypto checks a passphrase against one byte of
+        ;; a random header, so about one wrong passphrase in 256 gets past the
+        ;; check and fails later, in decompression, instead of being passed over.
+        ;; AES has a 2-byte check and an HMAC. So these are shown with AES only.
+        (unless (string= encryption "zipcrypt")
+          ;; Several, tried in turn until one works.
+          (assert (= 2 (length (read-all zip :passphrase '("password" "letmein" "hunter2")))))
 
-        ;; A function, called each time libarchive needs another one; NIL means
-        ;; "no more". This is where to prompt a user.
-        (let ((asked 0))
-          (read-all zip :passphrase (lambda ()
-                                      (incf asked)
-                                      (case asked (1 "wrong") (2 "hunter2") (t nil))))
-          (format t "  the passphrase function was asked ~D times~%" asked))
+          ;; A function, called each time libarchive needs another one; NIL means
+          ;; "no more". This is where to prompt a user.
+          (let ((asked 0))
+            (read-all zip :passphrase (lambda ()
+                                        (incf asked)
+                                        (case asked (1 "wrong") (2 "hunter2") (t nil))))
+            (format t "  the passphrase function was asked ~D times~%" asked))
 
-        ;; The wrong passphrase, or none: the names are there, the data is not.
-        (handler-case (progn (read-all zip :passphrase "wrong") (error "decrypted with the wrong passphrase"))
-          (archive-error (c) (format t "  wrong passphrase: ~A~%" (archive-condition-message c))))
+          ;; The wrong passphrase: the names are there, the data is not.
+          (handler-case (progn (read-all zip :passphrase "wrong") (error "decrypted with the wrong passphrase"))
+            (archive-error (c) (format t "  wrong passphrase: ~A~%" (archive-condition-message c)))))
+
+        ;; No passphrase at all.
         (handler-case (progn (read-all zip) (error "decrypted without a passphrase"))
           (archive-error (c) (format t "  no passphrase: ~A~%" (archive-condition-message c)))))))
 
