@@ -51,6 +51,10 @@ check "diff of a fresh copy" "$LA" diff -q p.tar.zst -C out/p
 check "diff sees a change" sh -c "echo x >> out/p/loose.txt; '$LA' diff -q p.tar.zst -C out/p; test \$? -eq 1"
 check "a -r appends"       sh -c "'$LA' a -r -q p.tar.zst out/p/loose.txt && test \$('$LA' l p.tar.zst | wc -l) -eq 6"
 
+check "cat to stdout"       sh -c "test \"\$('$LA' cat p.tar.zst proj/README)\" = 'read me'"
+check "rm removes"           sh -c "'$LA' rm -q p.tar.zst out && test \$('$LA' l p.tar.zst | wc -l) -eq 5"
+check "-T threads"           sh -c "'$LA' a -q -T 0 threads.tar.zst proj && '$LA' t -q threads.tar.zst"
+
 # Bare compression both ways.
 check "a .gz of one file"  "$LA" a -q loose.txt.gz loose.txt
 check "x .gz decompresses" "$LA" x -q loose.txt.gz -C gz

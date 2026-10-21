@@ -2,7 +2,7 @@
 
 (in-package #:libarchive/cli)
 
-(defparameter *version* "0.2.0")
+(defparameter *version* "0.3.0")
 
 ;;; Each command file calls REGISTER-COMMAND with a function that makes its
 ;;; clingon command. The top-level command is built afresh on every RUN, so the
@@ -15,18 +15,24 @@
         (append (remove name *command-makers* :key #'car :test #'string=)
                 (list (cons name maker)))))
 
-(defparameter *command-order* '("extract" "add" "list" "test" "info" "diff"))
+(defparameter *command-order* '("extract" "add" "remove" "list" "cat" "test" "info" "diff"))
 
-(defun top-level-command ()
+(defun top-level-command (&key (libarchive-details t))
+  "la's clingon command tree. LIBARCHIVE-DETAILS NIL leaves libarchive out of
+the version, so that the docs can be made where it cannot be loaded."
   (clingon:make-command
    :name "la"
-   :version (format nil "~A~%~A (~A)" *version* (version-details) *libarchive-origin*)
+   :version (if libarchive-details
+                (format nil "~A~%~A (~A)" *version* (version-details) *libarchive-origin*)
+                *version*)
    :description "extract, create, list and test archives of every kind libarchive knows"
    :long-description
    "la x ARCHIVE [ENTRY...]  extract (several roots: into a new directory)
 la a ARCHIVE FILE...     create; the format comes from the name
 la a -r ARCHIVE FILE...  add to it, replacing entries of the same name
+la rm ARCHIVE ENTRY...   remove entries
 la l ARCHIVE             list (-l for the long form)
+la cat ARCHIVE [ENTRY...] write files' contents to standard output
 la t ARCHIVE             read everything, checking the data
 la i ARCHIVE             format, compression and sizes
 la diff ARCHIVE          compare with the files here (-C DIR: there)

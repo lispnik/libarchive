@@ -1,11 +1,14 @@
 #!/bin/sh
-# Build the release la: bin/la with libarchive built in, checked with no
-# libarchive installed, and packaged as la-OS-ARCH.tar.gz.
+# Build the release la: bin/la with libarchive built in and its image
+# compressed, checked with no libarchive installed, and packaged with its man
+# page and shell completions as la-OS-ARCH.tar.gz.
 #
 #   ci/release-build.sh OS ARCH
 #
-# On Linux this runs inside an ubuntu:20.04 container (see ci.yml), so the
-# binary needs only glibc 2.31. Built tools are kept in .release/ for CI's cache.
+# SBCL is built here too (ci/build-sbcl.sh), for core compression and because
+# the binary carries SBCL's runtime: on Linux this runs inside an ubuntu:20.04
+# container (see ci.yml), so the binary needs only glibc 2.28; on macOS the
+# runtime targets macOS 11. Built tools are kept in .release/ for CI's cache.
 set -eu
 
 OS=$1 ARCH=$2
@@ -28,22 +31,26 @@ if [ "$OS" = linux ]; then
             | tar -xz -C "$CACHE/cmake" --strip-components 1
     fi
     export PATH=$CACHE/cmake/bin:$PATH
-    if [ ! -x "$CACHE/sbcl/bin/sbcl" ]; then
-        ci/build-sbcl.sh "$CACHE/sbcl"
-    fi
-    SBCL=$CACHE/sbcl/bin/sbcl
     LIB=$CACHE/libarchive/libarchive-bundle.so
 else
-    SBCL=sbcl
     LIB=$CACHE/libarchive/libarchive-bundle.dylib
 fi
 
+# libarchive first: its static zstd is what SBCL's core compression links.
 if [ ! -f "$LIB" ]; then
     ci/build-libarchive.sh "$CACHE/libarchive"
 fi
+if [ ! -x "$CACHE/sbcl/bin/sbcl" ]; then
+    ZSTD=$CACHE/libarchive/deps ci/build-sbcl.sh "$CACHE/sbcl"
+fi
+SBCL=$CACHE/sbcl/bin/sbcl
 
-rm -f bin/la
-LA_BUNDLE_LIBARCHIVE=$LIB make la SBCL="$SBCL"
+# Fasls of its own: any other SBCL's, even one of the same version, may have
+# been built with other features and cannot be loaded.
+export XDG_CACHE_HOME=$CACHE/fasl
+rm -f bin/la bin/la.1
+LA_BUNDLE_LIBARCHIVE=$LIB make la docs SBCL="$SBCL"
+unset XDG_CACHE_HOME
 
 echo "==> checking"
 bin/la --version
@@ -58,11 +65,13 @@ case $OS in
         objdump -T bin/la | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 ;;
     macos)
         otool -L bin/la
-        otool -l bin/la | grep -A3 LC_BUILD_VERSION | grep minos ;;
+        # LC_BUILD_VERSION's minos, or LC_VERSION_MIN_MACOSX's version.
+        otool -l bin/la | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' \
+            | grep -E 'minos|version' || true ;;
 esac
 ci/cli-smoke.sh bin/la
 
 mkdir -p dist
-cp bin/la LICENSE README.md dist/
-tar -czf "la-$OS-$ARCH.tar.gz" -C dist la LICENSE README.md
+cp bin/la bin/la.1 bin/_la bin/la.bash LICENSE README.md dist/
+tar -czf "la-$OS-$ARCH.tar.gz" -C dist la la.1 _la la.bash LICENSE README.md
 ls -l "la-$OS-$ARCH.tar.gz"

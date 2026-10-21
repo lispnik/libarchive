@@ -297,5 +297,6 @@ putting the pieces together:
   reports.
 - `:formats '(:raw)` handles bare compressed files.
 - Spooling standard input lets an archive be read twice.
-- `la a -r` rewrites an archive with `transfer-entry`, and `la diff` compares entries
-  with the disk as they are read.
+- `la a -r` and `la rm` rewrite an archive with `transfer-entry`, `la cat` copies
+  entry data to standard output with `copy-entry-data`, and `la diff` compares
+  entries with the disk as they are read.

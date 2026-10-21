@@ -430,3 +430,80 @@
     (multiple-value-bind (code out) (la "diff" "-q" "p.tar")
       (is (= 1 code))
       (is (string= "" out)))))
+
+;;; cat.
+
+(defun la-cat (&rest args)
+  "Run la cat with ARGS; return the exit code and what it wrote, as a string."
+  (let ((path (merge-pathnames "cat.out")))
+    (let ((code (with-open-file (out path :direction :output :element-type '(unsigned-byte 8)
+                                          :if-exists :supersede)
+                  (let ((libarchive/cli::*cat-output* out))
+                    (apply #'la "cat" args)))))
+      (values code (prog1 (read-file "cat.out") (delete-file path))))))
+
+(test cat-writes-entries
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "p.tar" "proj" "loose.txt")
+    (is (equal '(0 "read me") (multiple-value-list (la-cat "p.tar" "proj/README"))))
+    ;; Archive order, not the order asked for.
+    (is (equal '(0 "read meloose") (multiple-value-list (la-cat "p.tar" "loose.txt" "proj/README"))))
+    ;; A directory brings its files; no ENTRY, every file, in archive order.
+    (is (equal '(0 "int main(void) { return 0; }") (multiple-value-list (la-cat "p.tar" "*.c"))))
+    (is (= (+ (length "int main(void) { return 0; }") (length "object code"))
+           (length (nth-value 1 (la-cat "p.tar" "proj/src")))))
+    (let ((all (nth-value 1 (la-cat "p.tar"))))
+      (dolist (part '("read me" "object code" "int main" "loose"))
+        (is-true (search part all))))
+    (is (= 1 (la-cat "p.tar" "nothere")))
+    ;; A compressed file comes out decompressed.
+    (la-ok "a" "-q" "l.txt.xz" "loose.txt")
+    (is (equal '(0 "loose") (multiple-value-list (la-cat "l.txt.xz"))))
+    (is (= 2 (la-cat "l.txt.xz" "loose.txt")))))
+
+;;; rm.
+
+(test remove-entries
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "p.tar.bz2" "proj" "loose.txt")
+    (la-ok "rm" "-q" "p.tar.bz2" "proj/src" "loose.txt")
+    (is (equal '("proj/" "proj/README") (sort (lines (la-ok "l" "p.tar.bz2")) #'string<)))
+    (libarchive:with-archive-reader (r (merge-pathnames "p.tar.bz2"))
+      (libarchive:next-entry r)
+      (is (equal '("bzip2") (libarchive:archive-filter-names r))))
+    ;; A name that matches nothing changes nothing.
+    (multiple-value-bind (code out err) (la "rm" "p.tar.bz2" "proj/README" "nothere")
+      (declare (ignore out))
+      (is (= 1 code))
+      (is-true (search "nothere" err)))
+    (is (= 2 (length (lines (la-ok "l" "p.tar.bz2")))))
+    (is (= 2 (la "rm" "p.tar.bz2")))
+    (is (null (dot-la-files)))))
+
+;;; -T.
+
+(test compression-threads
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "-T" "0" "p.tar.zst" "proj")
+    (la-ok "a" "-q" "-T" "2" "p.tar.xz" "proj")
+    (la-ok "t" "-q" "p.tar.zst")
+    (la-ok "t" "-q" "p.tar.xz")
+    (is (= 2 (la "a" "-T" "2" "p.tar.gz" "proj")))
+    (is (= 2 (la "a" "-T" "-1" "q.tar.zst" "proj")))))
+
+;;; The man page and completions.
+
+(test generated-docs
+  (in-scratch-directory
+    (libarchive/cli::write-docs *default-pathname-defaults*)
+    (let ((man (read-file "la.1"))
+          (zsh (read-file "_la")))
+      (is-true (search ".Sh COMMANDS" man))
+      (dolist (command '("extract" "add" "remove" "list" "cat" "test" "info" "diff"))
+        (is-true (search (format nil ".Ss ~A" command) man) "~A not in la.1" command)
+        (is-true (search (format nil "'~A[" command) zsh) "~A not in _la" command))
+      (is-true (search "#compdef la" zsh))
+      (is-true (search "complete -o bashdefault" (read-file "la.bash"))))))

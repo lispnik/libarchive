@@ -147,6 +147,9 @@ la x notes.txt.xz                      # decompresses to notes.txt
 la x --strip-components 1 pkg.tar.gz   # drop the leading pkg-1.0/
 la x src.tar.gz 'src/*.c' src/include  # only these entries (globs; directories recurse)
 la diff backup.tar.gz -C ~/project     # what has changed since the archive was made
+la rm site.tar.zst site/drafts         # remove entries (the archive is rewritten)
+la cat logs.zip 'app/*.log' | less     # files' contents to standard output
+la a -T 0 big.tar.zst data/            # compress with a thread per CPU (zstd, xz)
 la l -l release.7z                     # list; t tests, i describes
 curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F)
 ```
@@ -166,6 +169,8 @@ curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F
 - **`la x ENTRY...`** extracts only the named entries. Each is a name or a glob
   (`*` and `?`, and `*` matches `/` too), and a directory brings everything under it.
   A name that matches nothing is an error, and nothing is extracted.
+- **`la rm`** rewrites the archive without the entries named, the way `-r` does, and
+  `la cat` writes files' contents to standard output (a bare `x.gz`: decompressed).
 - **`la diff`** compares each entry with the file at the same path under `-C DIR`
   (default: here): type, contents, symlink target and permissions, and with `-t`
   modification times. It also lists files on disk, in the directories the archive
@@ -184,12 +189,16 @@ Or download a binary from the [releases page](https://github.com/lispnik/libarch
 
 | | runs on |
 |---|---|
-| `la-macos-arm64` | macOS 15 or later |
-| `la-macos-x86_64` | macOS 14 or later |
+| `la-macos-arm64`, `la-macos-x86_64` | macOS 11 or later |
 | `la-linux-x86_64`, `la-linux-aarch64` | glibc 2.28 or later (RHEL 8, Debian 10, Ubuntu 20.04 and newer) |
 
 The release binaries have libarchive built in (3.8.10, with zlib, bzip2, xz, zstd, lz4,
-expat, and OpenSSL or CommonCrypto), so nothing else needs installing.
+expat, and OpenSSL or CommonCrypto), so nothing else needs installing. They come with
+a man page (`la.1`) and completions for zsh (`_la`) and bash (`la.bash`), which
+Homebrew installs; `make docs` writes them to `bin/`. The image in the binary is
+compressed, which makes it about 14 MB instead of 50, for some 40 ms more at startup.
+On first use la writes its libarchive to `~/.cache/la/` (checked against its own
+copy every run).
 `LA_LIBARCHIVE=system` makes one use the installed libarchive instead, and
 `LA_LIBARCHIVE=/path/to/libarchive.so` a particular file. A `make la` build uses the
 installed libarchive, unless `LA_BUNDLE_LIBARCHIVE` names one to build in:

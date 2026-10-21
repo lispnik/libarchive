@@ -208,9 +208,8 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
     :name "extract"
     :aliases '("x")
     :usage "[options] ARCHIVE [ENTRY...]"
-    :description "extract an archive (several top-level entries: into a new directory).
-With ENTRYs, only those: each is a name or a glob (* and ?), and a directory
-brings everything under it."
+    :description "extract an archive"
+    :long-description "An archive with several top-level entries is extracted into a new directory named after it. With ENTRYs, only those: each is a name or a glob (* and ?), and a directory brings everything under it."
     :options (list (clingon:make-option :string :short-name #\C :long-name "directory"
                                                 :key :directory :parameter "DIR"
                                                 :description "extract under DIR instead of here")

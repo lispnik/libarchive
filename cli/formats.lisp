@@ -85,6 +85,10 @@ empty becomes \"archive\"."
                                                                           :from-end t))))
 
 ;;; Compression levels: the filters that take one, by libarchive module name.
+(defparameter *thread-modules*
+  '((:zstd . "zstd") (:xz . "xz"))
+  "Filters with a threads option: the libarchive module that takes it.")
+
 (defparameter *level-modules*
   '((:gzip . "gzip") (:bzip2 . "bzip2") (:xz . "xz") (:lzma . "lzma") (:lzip . "lzip")
     (:zstd . "zstd") (:lz4 . "lz4")))

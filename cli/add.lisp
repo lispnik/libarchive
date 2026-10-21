@@ -24,6 +24,7 @@ ARCHIVE-NAME's extension."
   (let ((format-option (clingon:getopt cmd :format))
         (filter-options (clingon:getopt cmd :compression))
         (level (clingon:getopt cmd :level))
+        (threads (clingon:getopt cmd :threads))
         (passphrase (passphrase-from cmd)))
     (multiple-value-bind (format filters)
         (cond (format-option
@@ -53,6 +54,15 @@ ARCHIVE-NAME's extension."
                            format filters))
             (dolist (m modules)
               (push (cons (format nil "~A:compression-level" m) level) options))))
+        (when threads
+          (when (minusp threads) (usage-error "-T takes a count of 0 (one per CPU) or more"))
+          (let ((modules (loop for f in filters
+                               for module = (cdr (assoc f *thread-modules*))
+                               when module collect module)))
+            (unless modules
+              (usage-error "-T has nothing to set: only zstd and xz compress with threads"))
+            (dolist (m modules)
+              (push (cons (format nil "~A:threads" m) threads) options))))
         (when passphrase
           (unless (eq format :zip)
             (usage-error "only zip archives can be encrypted when writing (-p)"))
@@ -155,60 +165,68 @@ number of entries written."
     (sb-posix:close fd)
     (uiop:parse-native-namestring name)))
 
-(defun append-to-archive (cmd archive-name target inputs disk-paths format writer-keys add-keys)
-  "Rewrite TARGET with INPUTS added: entries of the same name are replaced, the
-rest kept, written in the format, compression and encryption the options give.
-The new files are spooled first, so that their names are known before the old
-entries are copied, and the original is replaced only once the new archive is
-complete."
+(defun rewrite-archive (cmd archive-name writer-keys &key (keep (constantly t)) spool)
+  "Write ARCHIVE-NAME afresh with WRITER-KEYS: its entries whose names KEEP is
+true of, then every entry of SPOOL (an archive file) if given. The new copy is
+written beside the original and renamed over it only once it is complete, so a
+failure leaves the original as it was. Returns the entries kept and dropped."
   (let* ((passphrase (getf writer-keys :passphrase))
-         (self (uiop:native-namestring (truename target)))
-         (spool (private-file (uiop:temporary-directory)))
-         (out nil)
-         (ok nil) (added 0) (kept 0) (replaced 0))
+         (self (uiop:native-namestring (truename (user-file archive-name))))
+         ;; Beside the archive, so that the rename cannot cross file systems.
+         (out (private-file (uiop:pathname-directory-pathname self)))
+         (ok nil) (kept 0) (dropped 0))
     (unwind-protect
          (progn
-           ;; 1. The new entries, as given, in an uncompressed pax spool.
-           (with-archive-writer (w spool :format :pax-restricted)
-             (setf added (apply #'add-inputs w inputs disk-paths format :self self add-keys)))
-           ;; Made only now, next to the archive (so the rename cannot cross
-           ;; file systems), so that adding "." does not take it in too.
-           (setf out (private-file (uiop:pathname-directory-pathname self)))
-           (let ((new-names (make-hash-table :test #'equal))
-                 (w (apply #'open-archive-writer out writer-keys))
+           (let ((w (apply #'open-archive-writer out writer-keys))
                  (written nil))
-             (with-archive-reader (r spool)
-               (do-archive-entries (e r)
-                 (setf (gethash (clean-name (entry-pathname e)) new-names) t)))
-             ;; 2. The old entries the new ones do not replace, then the new.
              (unwind-protect
                   (progn
-                    (with-archive-reader (r target :passphrase
+                    (with-archive-reader (r self :passphrase
                                             (reader-passphrase
                                              (passphrase-source cmd archive-name)))
                       (do-archive-entries (e r)
-                        (cond ((gethash (clean-name (entry-pathname e)) new-names)
-                               (incf replaced))
-                              (t
+                        (cond ((funcall keep (entry-pathname e))
                                (when (and (entry-data-encrypted-p e) (null passphrase))
                                  (fail "~A has encrypted entries: give -p to keep them encrypted"
                                        archive-name))
                                (transfer-entry r w e)
-                               (incf kept)))))
-                    (with-archive-reader (r spool)
-                      (do-archive-entries (e r)
-                        (transfer-entry r w e)))
+                               (incf kept))
+                              (t (incf dropped)))))
+                    (when spool
+                      (with-archive-reader (r spool)
+                        (do-archive-entries (e r)
+                          (transfer-entry r w e))))
                     (setf written t))
                (close-archive w :abort (not written))))
-           ;; 3. Into place, with the original's permissions.
+           ;; Into place, with the original's permissions.
            (sb-posix:chmod (uiop:native-namestring out)
                            (logand #o7777 (sb-posix:stat-mode (sb-posix:stat self))))
            (sb-posix:rename (uiop:native-namestring out) self)
            (setf ok t))
-      (ignore-errors (delete-file spool))
-      (when (and out (not ok)) (ignore-errors (delete-file out))))
-    (note "~A: ~D added~@[ (~D replacing older)~], ~D kept, ~A" archive-name
-          added (and (plusp replaced) replaced) kept (human-size (file-size target)))
+      (unless ok (ignore-errors (delete-file out))))
+    (values kept dropped)))
+
+(defun append-to-archive (cmd archive-name target inputs disk-paths format writer-keys add-keys)
+  "Rewrite TARGET with INPUTS added: entries of the same name are replaced, the
+rest kept. The new files are spooled first, so that their names are known
+before the old entries are copied."
+  (let ((spool (private-file (uiop:temporary-directory)))
+        (added 0))
+    (unwind-protect
+         (let ((new-names (make-hash-table :test #'equal)))
+           (with-archive-writer (w spool :format :pax-restricted)
+             (setf added (apply #'add-inputs w inputs disk-paths format
+                                :self (uiop:native-namestring (truename target)) add-keys)))
+           (with-archive-reader (r spool)
+             (do-archive-entries (e r)
+               (setf (gethash (clean-name (entry-pathname e)) new-names) t)))
+           (multiple-value-bind (kept replaced)
+               (rewrite-archive cmd archive-name writer-keys
+                                :keep (lambda (name) (not (gethash (clean-name name) new-names)))
+                                :spool spool)
+             (note "~A: ~D added~@[ (~D replacing older)~], ~D kept, ~A" archive-name
+                   added (and (plusp replaced) replaced) kept (human-size (file-size target)))))
+      (ignore-errors (delete-file spool)))
     0))
 
 (defun entry-filter (disk name self excludes verbose)
@@ -242,6 +260,9 @@ archive being written, and anything --exclude matches; prints names if VERBOSE."
                                               :description "gzip, bzip2, xz, zstd, lz4, lzip, lzma, compress, none (repeatable)")
                    (clingon:make-option :integer :short-name #\l :long-name "level" :key :level
                                                  :parameter "N" :description "compression level")
+                   (clingon:make-option :integer :short-name #\T :long-name "threads" :key :threads
+                                                 :parameter "N"
+                                                 :description "compress with N threads (zstd, xz; 0: one per CPU)")
                    (clingon:make-option :string :short-name #\p :long-name "passphrase"
                                                 :key :passphrase :parameter "PASS"
                                                 :description "encrypt (zip, AES-256)")

@@ -152,8 +152,8 @@
     :name "diff"
     :aliases '("d")
     :usage "[options] ARCHIVE"
-    :description "compare an archive with the files on disk: types, contents, links and modes,
-and files the archive does not have in the directories it covers"
+    :description "compare an archive with the files on disk"
+    :long-description "Types, contents, symlink targets and permissions are compared, and files the archive does not have, in the directories it covers, are listed."
     :options (list (clingon:make-option :string :short-name #\C :long-name "directory"
                                                 :key :directory :parameter "DIR"
                                                 :description "compare with DIR instead of here")

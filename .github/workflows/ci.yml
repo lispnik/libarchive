@@ -282,12 +282,13 @@ jobs:
           cat > notes.md <<'NOTES'
           `la` extracts, creates, lists and tests archives in every format libarchive
           handles. Each tarball holds the `la` binary (an SBCL image with libarchive
-          built in), LICENSE and README. Nothing else needs to be installed.
+          built in), its man page `la.1`, completions for zsh (`_la`) and bash
+          (`la.bash`), LICENSE and README. Nothing else needs to be installed.
 
           | Download | Runs on |
           |---|---|
-          | `la-macos-arm64.tar.gz` | macOS 15 or later, Apple silicon |
-          | `la-macos-x86_64.tar.gz` | macOS 14 or later, Intel |
+          | `la-macos-arm64.tar.gz` | macOS 11 or later, Apple silicon |
+          | `la-macos-x86_64.tar.gz` | macOS 11 or later, Intel |
           | `la-linux-x86_64.tar.gz` | Linux with glibc 2.28 or later (RHEL 8, Debian 10, Ubuntu 20.04 and newer) |
           | `la-linux-aarch64.tar.gz` | the same, on arm64 |
 
@@ -307,3 +308,30 @@ jobs:
           NOTES
           gh release create "$GITHUB_REF_NAME" dist/la-*.tar.gz dist/SHA256SUMS \
             --title "la $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+
+      # The Homebrew formula, from the release just made. TAP_DEPLOY_KEY is a
+      # deploy key with write access to lispnik/homebrew-tap and nothing else.
+      - name: Check out this repository, for ci/tap-formula.sh
+        uses: actions/checkout@v7
+        with:
+          path: src
+
+      - name: Check out the tap
+        uses: actions/checkout@v7
+        with:
+          repository: lispnik/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: Update the tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          src/ci/tap-formula.sh "$GITHUB_REF_NAME" > tap/Formula/la.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/la.rb
+          git diff --cached --quiet || git commit -m "la ${GITHUB_REF_NAME#v}"
+          git push

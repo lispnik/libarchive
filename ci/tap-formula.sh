@@ -48,6 +48,9 @@ class La < Formula
 
   def install
     bin.install "la"
+    man1.install "la.1"
+    zsh_completion.install "_la"
+    bash_completion.install "la.bash" => "la"
   end
 
   test do

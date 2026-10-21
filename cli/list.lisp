@@ -67,6 +67,43 @@
         (warn-user "~A: ~D of ~D entr~:@P damaged" (display-name name) bad entries))
     (if (zerop bad) 0 1)))
 
+;;; cat
+
+(defvar *cat-output* nil
+  "Where la cat writes, a binary output stream; NIL for standard output.")
+
+(defun cat/handler (cmd)
+  (let ((args (clingon:command-arguments cmd)))
+    (when (null args)
+      (usage-error "cat takes an archive, and optionally the entries to print (see la cat --help)"))
+    (destructuring-bind (name &rest patterns) args
+      (let ((out (or *cat-output* (stdout-octets)))
+            (passphrase (passphrase-source cmd (display-name name))))
+        (multiple-value-bind (selected unused) (make-selector patterns)
+          (unwind-protect
+               (call-with-input-archive
+                name
+                (lambda (archive)
+                  ;; A bare compressed file, by its name (see la x) or as read,
+                  ;; is printed decompressed.
+                  (let ((raw-by-name (eq :raw (archive-kind name))))
+                    (with-archive-reader (r archive :formats (if raw-by-name '(:raw) '(:all :raw))
+                                                    :passphrase (reader-passphrase passphrase))
+                      (do-archive-entries (e r)
+                        (cond ((equal (archive-format-name r) "raw")
+                               (when patterns
+                                 (usage-error "~A is a compressed file, not an archive: there are ~
+                                               no entries to choose" (display-name name)))
+                               (copy-entry-data r out))
+                              ((and (eq (entry-type e) :regular)
+                                    (funcall selected (entry-pathname e)))
+                               (copy-entry-data r out))))))))
+            (finish-output out))
+          (let ((missing (funcall unused)))
+            (when missing
+              (fail "~{~A~^, ~}: not in ~A" missing (display-name name)))))
+        0))))
+
 ;;; info
 
 (defun info/handler (cmd)
@@ -140,6 +177,19 @@
                    (clingon:make-option :flag :short-name #\q :long-name "quiet" :key :quiet
                                               :description "no summary line"))
     :handler #'test/handler)))
+
+(register-command
+ "cat"
+ (lambda ()
+   (clingon:make-command
+    :name "cat"
+    :usage "[options] ARCHIVE [ENTRY...]"
+    :description "write files from an archive to standard output"
+    :long-description "In archive order: those ENTRYs name (names or globs; a directory brings what is under it), or all of them. A compressed file (x.txt.gz) is written decompressed."
+    :options (list (clingon:make-option :string :short-name #\p :long-name "passphrase"
+                                                :key :passphrase :parameter "PASS"
+                                                :description "passphrase for encrypted entries"))
+    :handler #'cat/handler)))
 
 (register-command
  "info"

@@ -18,7 +18,7 @@
 (asdf:defsystem #:libarchive/ffi
   :description "Complete raw CFFI bindings to libarchive."
   :license     "MIT"
-  :version     "0.2.0"
+  :version     "0.3.0"
   :depends-on  (#:cffi #:bordeaux-threads)
   :components ((:module "src"
                 :components ((:file "package")
@@ -36,7 +36,7 @@
 (asdf:defsystem #:libarchive
   :description "Common Lisp interface to libarchive: read, write and extract tar, zip, 7z, cpio, iso9660 and more."
   :license     "MIT"
-  :version     "0.2.0"
+  :version     "0.3.0"
   :depends-on  (#:libarchive/ffi #:bordeaux-threads #:trivial-garbage #:babel
                ;; SBCL normalizes Unicode itself; only macOS needs it (entry.lisp).
                (:feature (:and :darwin (:not :sbcl)) #:uax-15))
@@ -59,7 +59,7 @@
 (asdf:defsystem #:libarchive/tests
   :description "Test suite for libarchive."
   :license     "MIT"
-  :version     "0.2.0"
+  :version     "0.3.0"
   :depends-on  (#:libarchive #:fiveam #:trivial-gray-streams #:bordeaux-threads)
   :components ((:module "tests"
                 :serial t
@@ -85,7 +85,7 @@
 (asdf:defsystem #:libarchive/cli
   :description "la: extract, create, list and test archives of every kind libarchive knows."
   :license     "MIT"
-  :version     "0.2.0"
+  :version     "0.3.0"
   :depends-on  (#:libarchive #:clingon #:sb-posix)
   :components ((:module "cli"
                 :components ((:file "package")
@@ -98,16 +98,24 @@
                              (:file "extract" :depends-on ("main" "formats"))
                              (:file "add"     :depends-on ("main" "formats" "extract"))
                              (:file "list"    :depends-on ("main" "extract"))
-                             (:file "diff"    :depends-on ("main" "extract")))))
+                             (:file "diff"    :depends-on ("main" "extract"))
+                             (:file "remove"  :depends-on ("main" "add"))
+                             (:file "docs"    :depends-on ("main")))))
   :build-operation "program-op"
   :build-pathname  "bin/la"
   :entry-point     "libarchive/cli:main"
+  ;; ASDF's own method, but compressed when this SBCL can: the image is about
+  ;; three quarters of the binary, and zstd shrinks it to a quarter.
+  :perform (asdf:program-op (o c)
+             (uiop:dump-image (asdf:output-file o c)
+                              :executable t
+                              :compression (and (member :sb-core-compression *features*) t)))
   :in-order-to ((asdf:test-op (asdf:test-op #:libarchive/cli/tests))))
 
 (asdf:defsystem #:libarchive/cli/tests
   :description "Tests for la, run in-process."
   :license     "MIT"
-  :version     "0.2.0"
+  :version     "0.3.0"
   :depends-on  (#:libarchive/cli #:fiveam)
   :components ((:module "cli-tests"
                 :serial t

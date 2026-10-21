@@ -41,17 +41,20 @@ CI (`.github/workflows/ci.yml`) has three jobs, all on every push to main and on
 - **`build`**: the release `la`, via `ci/release-build.sh`. `ci/build-libarchive.sh`
   builds libarchive 3.8.10 as one shared library with its compression and crypto
   libraries static inside, and `LA_BUNDLE_LIBARCHIVE` builds it into the image. Linux
-  builds in an `ubuntu:20.04` container, with SBCL built from source there
-  (`ci/build-sbcl.sh`), because the dumped binary carries SBCL's runtime and so its
-  glibc floor. The result is checked on glibc 2.28 (AlmaLinux 8). `.release/` caches
-  the built toolchain.
+  builds in an `ubuntu:20.04` container. SBCL is built from source on every
+  platform (`ci/build-sbcl.sh`, with core compression and libarchive's static zstd),
+  because the dumped binary carries SBCL's runtime and so its glibc or macOS floor
+  (macOS 11). The result is checked on glibc 2.28 (AlmaLinux 8). `.release/` caches
+  the built toolchain, and `.release/fasl` keeps its fasls apart from any other
+  SBCL's (same version, different features: they will not load).
 
 `ocicl/` is gitignored, and `ocicl.csv` pins it.
 
 **Releasing:** bump `*version*` in `cli/main.lisp` and every `:version` in the `.asd`,
 then push a `v*` tag. The `release` job publishes the four `la-<os>-<arch>.tar.gz` and
-`SHA256SUMS`. Then regenerate the Homebrew formula and push the tap:
-`ci/tap-formula.sh vX.Y.Z > ../homebrew-tap/Formula/la.rb` (github.com/lispnik/homebrew-tap).
+`SHA256SUMS`, then regenerates `Formula/la.rb` in github.com/lispnik/homebrew-tap with
+`ci/tap-formula.sh` and pushes it, using the `TAP_DEPLOY_KEY` secret (a deploy key with
+write access to the tap only).
 The ocicl request is ocicl/request-system-additions-here#78.
 
 The Makefile's `BOOT` is a **hermetic** source registry: this tree as a `:tree`,
@@ -82,8 +85,18 @@ Laid out like ud18's CLI: each command file registers a maker with
 - **Not covered in-process:** stdin/stdout, real exit codes and the bundled library.
   `ci/cli-smoke.sh` tests those against the built binary.
 - **Bundled libarchive** (`cli/bundle.lisp`): `main`, not `run`, writes the embedded
-  bytes to an `mkstemp` file, sets `*library-pathname*`, loads, and unlinks it.
-  `LA_LIBARCHIVE=system` or `=FILE` overrides; `la --version` says which is in use.
+  bytes once to `~/.cache/la/libarchive-<fnv>.dylib`, compares it byte for byte on
+  every start, and loads it from there. A fixed path matters: macOS vets each new
+  library file, about 120 ms a run when it was a fresh temp file. If the cache fails,
+  an `mkstemp` file is loaded and unlinked. `LA_LIBARCHIVE=system` or `=FILE`
+  overrides; `la --version` says which is in use.
+- **Image compression**: `libarchive/cli`'s `:perform` for `program-op` passes
+  `:compression` when the SBCL has `:sb-core-compression` (Homebrew's doesn't).
+- **`cli/docs.lisp`** writes `la.1` (own mdoc writer: clingon's errors on aliases),
+  `_la` (own zsh writer, with file completion) and `la.bash` (calls clingon's
+  `--bash-completions`). `make docs`. A command's `:description` is one line (menus,
+  `--help` listings); details go in `:long-description`.
+- **`la rm`** and **`la a -r`** both go through `rewrite-archive`.
 - **`la a -r`** spools the new files to a pax file first, so their names are known,
   then writes old (unreplaced) entries and the spool with `transfer-entry` to a temp
   file beside the archive, and renames it over the original.

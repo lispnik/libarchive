@@ -5,6 +5,7 @@
 #   make examples   -- run every program in examples/ (each checks its own output)
 #   make example NAME=quickstart  -- run one
 #   make la         -- build the la archive tool at bin/la
+#   make docs       -- bin/la.1, bin/_la (zsh) and bin/la.bash
 #   make cli-test   -- la's FiveAM suite, then ci/cli-smoke.sh against bin/la
 #   make generate   -- regenerate the raw layer from the installed headers
 #   make clean      -- drop this tree's fasl caches
@@ -38,7 +39,7 @@ LIBARCHIVE_INCLUDE ?= $(shell brew --prefix libarchive 2>/dev/null || echo /usr)
 BOOT := --eval "(require :asdf)" \
         --eval "(asdf:initialize-source-registry \`(:source-registry (:tree ,(truename \"./\")) :ignore-inherited-configuration))"
 
-.PHONY: test check examples example la cli-test generate clean help
+.PHONY: test check examples example la docs cli-test generate clean help
 .DEFAULT_GOAL := test
 
 # Each example in its own fresh image, so none can lean on another's definitions.
@@ -77,6 +78,14 @@ bin/la: $(LA_SOURCES)
 	@mkdir -p bin
 	$(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:make :libarchive/cli)" $(QUIT)
 	@ls -lh bin/la
+
+# The man page and shell completions, from the command definitions.
+docs: bin/la.1
+
+bin/la.1: $(LA_SOURCES)
+	@mkdir -p bin
+	$(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:load-system :libarchive/cli)" \
+	  --eval "(libarchive/cli::write-docs \"bin/\")" $(QUIT)
 
 cli-test: bin/la
 	$(SBCL) $(SBCL_FLAGS) $(BOOT) \
