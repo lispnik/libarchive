@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-CFFI bindings to **libarchive** for SBCL, in two layers: a generated raw layer over
+CFFI bindings to **libarchive** for Common Lisp (tested on SBCL, CCL and ECL; the
+`la` tool is SBCL only), in two layers: a generated raw layer over
 every function and constant in `archive.h`/`archive_entry.h`, and an ergonomic layer
 (readers, writers, entries, extraction and disk archiving). Developed on macOS arm64
 against Homebrew libarchive 3.8.9, which is keg-only at `/opt/homebrew/opt/libarchive`.
@@ -14,7 +15,7 @@ against Homebrew libarchive 3.8.9, which is keg-only at `/opt/homebrew/opt/libar
 Dependencies are vendored under `ocicl/` (restore with `ocicl install`).
 
 ```sh
-make test       # FiveAM suite; exits non-zero on failure
+make test       # FiveAM suite; exits non-zero on failure (LISP=ecl or ccl: on those)
 make check      # test, then load and print version + export count
 make examples   # every examples/*.lisp in its own image; they ASSERT their output
 make la         # bin/la, the libarchive/cli system dumped with program-op
@@ -28,15 +29,29 @@ To run one test from a REPL:
 `libarchive-symbols`, `-entries`, `-roundtrip`, `-streams`, `-callbacks`, `-encryption`,
 `-disk`, `-errors`, `-hygiene` (last; it asserts that the client-data registry is empty).
 
-CI (`.github/workflows/ci.yml`) runs `ci/test.sh`, which is `ocicl install` if `ocicl/`
-is absent, then `make test`, `make check` and `make examples`. It runs on Ubuntu 24.04 x86_64 and aarch64
-(apt SBCL, libarchive 3.7.2, so it covers an older library and the Linux
-`mode_t`/`dev_t` sizes) and on macOS 15 arm64 (Homebrew). `ocicl/` is gitignored, and
-`ocicl.csv` pins it.
+CI (`.github/workflows/ci.yml`) has three jobs, all on every push to main and on
+`workflow_dispatch` (other branches only run when dispatched: `gh workflow run ci.yml
+--ref BRANCH`):
+- **`test`** runs `ci/test.sh`: `ci/deps.sh` (`ocicl install` if `ocicl/` is absent),
+  then `make test check examples la cli-test`. On Ubuntu 24.04 x86_64 and aarch64 (apt
+  SBCL, libarchive 3.7.2, so it covers an older library and the Linux
+  `mode_t`/`dev_t` sizes) and macOS 15 arm64 and Intel (Homebrew).
+- **`other-lisps`**: the same script with `LISP=` CCL 1.13 and Ubuntu's ECL 21.2,
+  library only.
+- **`build`**: the release `la`, via `ci/release-build.sh`. `ci/build-libarchive.sh`
+  builds libarchive 3.8.10 as one shared library with its compression and crypto
+  libraries static inside, and `LA_BUNDLE_LIBARCHIVE` builds it into the image. Linux
+  builds in an `ubuntu:20.04` container, with SBCL built from source there
+  (`ci/build-sbcl.sh`), because the dumped binary carries SBCL's runtime and so its
+  glibc floor. The result is checked on glibc 2.28 (AlmaLinux 8). `.release/` caches
+  the built toolchain.
 
-Every CI run uploads `la-<os>-<arch>.tar.gz` (bin/la, LICENSE, README) as an
-artifact. Pushing a `v*` tag also runs the `release` job, which publishes the three as
-a GitHub release. Bump `*version*` in `cli/main.lisp` and `:version` in the `.asd` first.
+`ocicl/` is gitignored, and `ocicl.csv` pins it.
+
+**Releasing:** bump `*version*` in `cli/main.lisp` and every `:version` in the `.asd`,
+then push a `v*` tag. The `release` job publishes the four `la-<os>-<arch>.tar.gz` and
+`SHA256SUMS`. Then regenerate the Homebrew formula and push the tap:
+`ci/tap-formula.sh vX.Y.Z > ../homebrew-tap/Formula/la.rb` (github.com/lispnik/homebrew-tap).
 The ocicl request is ocicl/request-system-additions-here#78.
 
 The Makefile's `BOOT` is a **hermetic** source registry: this tree as a `:tree`,
@@ -45,9 +60,9 @@ ignoring inherited configuration. Copy it at a REPL rather than relying on `~/.s
 ## Architecture
 
 ```
-libarchive/ffi    cffi                                        generated raw layer
-libarchive        ffi + bordeaux-threads + trivial-garbage + babel
-libarchive/tests  libarchive + fiveam
+libarchive/ffi    cffi + bordeaux-threads                     generated raw layer
+libarchive        ffi + trivial-garbage + babel (+ uax-15 off SBCL on macOS)
+libarchive/tests  libarchive + fiveam + trivial-gray-streams
 libarchive/cli    libarchive + clingon + sb-posix                the la binary (cli/)
 libarchive/cli/tests  libarchive/cli + fiveam                    cli-tests/
 ```
@@ -64,8 +79,16 @@ Laid out like ud18's CLI: each command file registers a maker with
   `chdir`s, so the tests bind it to a scratch directory.
 - **Standard input** (`-`) is spooled to a temp file, because `la x` reads the
   archive twice (once for the top-level roots, once to extract).
-- **Not covered in-process:** stdin/stdout and real exit codes. `ci/cli-smoke.sh`
-  tests those against the built binary.
+- **Not covered in-process:** stdin/stdout, real exit codes and the bundled library.
+  `ci/cli-smoke.sh` tests those against the built binary.
+- **Bundled libarchive** (`cli/bundle.lisp`): `main`, not `run`, writes the embedded
+  bytes to an `mkstemp` file, sets `*library-pathname*`, loads, and unlinks it.
+  `LA_LIBARCHIVE=system` or `=FILE` overrides; `la --version` says which is in use.
+- **`la a -r`** spools the new files to a pax file first, so their names are known,
+  then writes old (unreplaced) entries and the spool with `transfer-entry` to a temp
+  file beside the archive, and renames it over the original.
+- **`la x ENTRY...`** filters through `make-selector`; patterns match original names,
+  before `--strip-components`.
 
 `cli/formats.lisp` holds the single extension table, used for writing and for
 `archive-stem`.
@@ -120,7 +143,7 @@ that `free-entry` cancels.
 - libarchive pads the last block *after* compression for callback/memory output. That
   breaks gzip consumers (trailing garbage) and libarchive's own zstd reader. The writer
   sets `bytes_in_last_block` to 1 except for uncompressed tar/cpio.
-- SBCL never calls `setlocale`, and libarchive converts every name through the locale:
+- Lisps don't call `setlocale`, and libarchive converts every name through the locale:
   under "C" the pax writer dereferences a failed conversion (crash), ustar writes "",
   7z writes a damaged archive, cpio refuses. `load-libraries` switches `LC_CTYPE` to
   UTF-8 (`ensure-utf-8-locale`). It is locked, too: concurrent first calls crashed.
@@ -134,3 +157,11 @@ that `free-entry` cancels.
   macOS `/tmp` is a symlink and `SECURE_SYMLINKS` would refuse it). So the names libarchive
   sees are absolute, and `SECURE_NOABSOLUTEPATHS` can't be used. `check-extract-name`
   enforces it on the original names instead.
+- A zip read from a stream that can't seek has no file types (they are in the central
+  directory): a symlink reads as a regular file whose data is its target.
+- ZipCrypto checks a passphrase with one byte, so about 1 wrong passphrase in 256
+  passes the check and then fails in decompression. Tests that offer wrong
+  passphrases use `encrypted-zip-rejecting`.
+- Portability: the library avoids `sb-` symbols (bordeaux-threads for the load lock,
+  `uiop:register-image-restore-hook`, uax-15 for NFC off SBCL). The tests use
+  libarchive's own `archive_read_disk_entry_from_file` for lstat and readlink.

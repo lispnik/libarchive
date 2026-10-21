@@ -20,7 +20,7 @@
    open-archive-reader next-entry read-entry-data read-entry-string
    read-entry-data-into copy-entry-data skip-entry-data archive-has-encrypted-entries
    ;; writer.lisp
-   open-archive-writer write-entry add-entry writer-octets
+   open-archive-writer write-entry add-entry transfer-entry writer-octets
    ;; disk.lisp
    extract-archive archive-directory *default-extract-flags* skip-entry
    *extract-flags* *read-disk-flags* *read-formats* *read-filters*

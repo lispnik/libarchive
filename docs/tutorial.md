@@ -102,7 +102,9 @@ tells you which you have.
 - A tar header has no way to say "no mtime". An unset mtime is written as 0 and
   reads back as the Unix epoch.
 - zip often records sizes only after the data, so `entry-size` can be NIL when
-  reading a zip from a stream.
+  reading a zip from a stream that can't seek. File types are recorded only in
+  the zip's central directory at the end, so read that way a symlink comes back as
+  a regular file whose data is its target.
 
 → [`examples/entries.lisp`](../examples/entries.lisp)
 
@@ -129,6 +131,18 @@ straight through, which suits tar and most other formats.
 A tar header has to give the entry size before the data. So when `:data` is a
 stream and you pass no `:size`, `add-entry` reads the whole stream into memory
 first. Pass `:size` when you know it.
+
+To copy entries from one archive into another, `transfer-entry` writes the reader's
+current entry to a writer and streams its data across, so nothing is held in
+memory. Change the entry first (rename it, say) and the change is what gets written:
+
+```lisp
+(with-archive-writer (w #p"site.tar.zst" :format :pax-restricted :filters :zstd)
+  (with-archive-reader (r #p"site.zip")
+    (do-archive-entries (e r)
+      (setf (entry-pathname e) (concatenate 'string "www/" (entry-pathname e)))
+      (transfer-entry r w))))
+```
 
 → [`examples/streams.lisp`](../examples/streams.lisp), and
 [`examples/repack.lisp`](../examples/repack.lisp) for zip → tar.zst conversion in one
@@ -261,8 +275,8 @@ independent, and the first call is safe from any number of threads at once.
 
 ## 10. What the binding does to the process
 
-- **Locale.** libarchive converts names through the C locale, which an SBCL process
-  never sets. In the default "C" locale, non-ASCII names are corrupted, refused, or
+- **Locale.** libarchive converts names through the C locale, which a Lisp process
+  generally never sets. In the default "C" locale, non-ASCII names are corrupted, refused, or
   crash the pax writer. So the first call into libarchive switches `LC_CTYPE`, and
   only `LC_CTYPE`, to a UTF-8 locale if it isn't one already. Set
   `*ensure-utf-8-locale*` to NIL beforehand to leave the locale alone.
@@ -270,7 +284,8 @@ independent, and the first call is safe from any number of threads at once.
   name it reads (NFD). The binding recomposes names to NFC, so the name you read
   back is the name you wrote, on every platform.
 - **Library search.** Homebrew's libarchive is keg-only, so its directories are
-  searched before the system's old copy. `*library-directories*` holds the list.
+  searched before the system's old copy. `*library-directories*` holds the list, and
+  `*library-pathname*`, if set before the first call, names the file to open instead.
 
 ## 11. Further: the `la` tool
 
@@ -282,3 +297,5 @@ putting the pieces together:
   reports.
 - `:formats '(:raw)` handles bare compressed files.
 - Spooling standard input lets an archive be read twice.
+- `la a -r` rewrites an archive with `transfer-entry`, and `la diff` compares entries
+  with the disk as they are read.

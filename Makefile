@@ -7,12 +7,27 @@
 #   make la         -- build the la archive tool at bin/la
 #   make cli-test   -- la's FiveAM suite, then ci/cli-smoke.sh against bin/la
 #   make generate   -- regenerate the raw layer from the installed headers
-#   make clean      -- drop this tree's SBCL fasl cache
+#   make clean      -- drop this tree's fasl caches
+#
+# LISP=ccl or LISP=ecl runs test, check and examples on another implementation.
 #
 # There is no binary to build: this is a library.
 
+# LISP picks the implementation for test, check and examples: sbcl (the
+# default), ccl or ecl. The la binary is SBCL only.
+LISP       ?= sbcl
 SBCL       ?= sbcl
 SBCL_FLAGS := --noinform --non-interactive --no-userinit --no-sysinit
+ifeq ($(LISP),sbcl)
+  LISP_FLAGS := $(SBCL_FLAGS)
+else ifneq (,$(findstring ccl,$(LISP))$(findstring lx86cl,$(LISP)))
+  LISP_FLAGS := --no-init --batch --quiet
+else ifneq (,$(findstring ecl,$(LISP)))
+  LISP_FLAGS := --norc
+else
+  $(error LISP=$(LISP): say how to run it without init files in the Makefile)
+endif
+QUIT := --eval "(uiop:quit 0)"
 PYTHON     ?= python3
 
 # The headers the raw layer is generated from. Homebrew's libarchive is keg-only.
@@ -28,20 +43,20 @@ BOOT := --eval "(require :asdf)" \
 
 # Each example in its own fresh image, so none can lean on another's definitions.
 EXAMPLES := $(wildcard examples/*.lisp)
-RUN_EXAMPLE = $(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:load-system :libarchive)" \
-                --load $(1) --eval "(sb-ext:exit)"
+RUN_EXAMPLE = $(LISP) $(LISP_FLAGS) $(BOOT) --eval "(asdf:load-system :libarchive)" \
+                --load $(1) $(QUIT) </dev/null
 
 test:
-	$(SBCL) $(SBCL_FLAGS) $(BOOT) \
-	  --eval "(asdf:test-system :libarchive)" --eval "(sb-ext:exit)"
+	$(LISP) $(LISP_FLAGS) $(BOOT) \
+	  --eval "(asdf:test-system :libarchive)" $(QUIT) </dev/null
 
 check: test
-	$(SBCL) $(SBCL_FLAGS) $(BOOT) \
+	$(LISP) $(LISP_FLAGS) $(BOOT) \
 	  --eval "(asdf:load-system :libarchive)" \
 	  --eval "(format t \"~&~A loaded: ~D exported symbols~%\" \
 	            (libarchive:version-string) \
 	            (let ((n 0)) (do-external-symbols (s :libarchive) (declare (ignore s)) (incf n)) n))" \
-	  --eval "(sb-ext:exit)"
+	  $(QUIT) </dev/null
 
 examples:
 	@set -e; for f in $(EXAMPLES); do \
@@ -60,12 +75,12 @@ la: bin/la
 
 bin/la: $(LA_SOURCES)
 	@mkdir -p bin
-	$(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:make :libarchive/cli)" --eval "(sb-ext:exit)"
+	$(SBCL) $(SBCL_FLAGS) $(BOOT) --eval "(asdf:make :libarchive/cli)" $(QUIT)
 	@ls -lh bin/la
 
 cli-test: bin/la
 	$(SBCL) $(SBCL_FLAGS) $(BOOT) \
-	  --eval "(asdf:test-system :libarchive/cli)" --eval "(sb-ext:exit)"
+	  --eval "(asdf:test-system :libarchive/cli)" $(QUIT)
 	ci/cli-smoke.sh bin/la
 
 generate:
@@ -74,6 +89,7 @@ generate:
 clean:
 	rm -rf bin
 	rm -rf $(HOME)/.cache/common-lisp/*/$(subst /,_,$(CURDIR))
+	rm -rf $(HOME)/.cache/common-lisp/*$(CURDIR)
 
 help:
 	@grep -E '^#   ' Makefile | sed 's/^#   //'

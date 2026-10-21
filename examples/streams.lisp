@@ -7,6 +7,10 @@
 ;;; (or :OCTETS for a writer), or any binary Lisp stream -- including one you write
 ;;; yourself, like the Gray stream below, which libarchive reaches through callbacks.
 
+;;; Gray streams are not in the standard; trivial-gray-streams papers over
+;;; the differences between implementations.
+(asdf:load-system :trivial-gray-streams)
+
 (defpackage #:libarchive-examples/streams
   (:use #:cl #:libarchive))
 
@@ -23,7 +27,7 @@
 
 ;;; A binary input stream that hands out at most CHUNK bytes per read, and
 ;;; cannot seek: a stand-in for a socket or a pipe.
-(defclass trickle-stream (sb-gray:fundamental-binary-input-stream)
+(defclass trickle-stream (trivial-gray-streams:fundamental-binary-input-stream)
   ((data :initarg :data)
    (position :initform 0)
    (chunk :initarg :chunk :initform 1000)
@@ -31,7 +35,7 @@
 
 (defmethod stream-element-type ((s trickle-stream)) '(unsigned-byte 8))
 
-(defmethod sb-gray:stream-read-sequence ((s trickle-stream) seq &optional (start 0) end)
+(defmethod trivial-gray-streams:stream-read-sequence ((s trickle-stream) seq start end &key)
   (with-slots (data position chunk reads) s
     (incf reads)
     (let ((n (min chunk (- (or end (length seq)) start) (- (length data) position))))

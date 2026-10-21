@@ -94,25 +94,39 @@
       (archive-directory dir :octets :filter (lambda (e) (declare (ignore e))
                                                (error 'test-stream-error))))))
 
+(defun this-lisp-command ()
+  "The command that starts another image of this Lisp with no init files, and
+how it takes a form to evaluate; NIL where we do not know."
+  #+sbcl (values (list sb-ext:*runtime-pathname* "--core" (namestring sb-ext:*core-pathname*)
+                       "--noinform" "--non-interactive" "--no-userinit" "--no-sysinit")
+                 "--eval")
+  #+ccl (values (list (first ccl:*command-line-argument-list*) "--no-init" "--batch" "--quiet")
+                "--eval")
+  #+ecl (values (list (si:argv 0) "--norc") "--eval")
+  #-(or sbcl ccl ecl) nil)
+
 (test first-calls-from-many-threads-at-once
   ;; Needs a fresh image: this one loaded libarchive long ago. Eight threads
   ;; making their first libarchive call together once crashed in
   ;; archive_write_new, because LOAD-LIBRARIES ran in all of them at once.
   ;; Separate --evals, because each is read only after the one before has run.
-  (let* ((root (uiop:native-namestring (asdf:system-source-directory :libarchive)))
-         (forms
-           (list "(require :asdf)"
-                 (format nil "(asdf:initialize-source-registry '(:source-registry (:tree ~S) ~
-                              :ignore-inherited-configuration))" root)
-                 "(asdf:load-system :libarchive)"
-                 "(let ((threads (loop repeat 8 collect
-                     (sb-thread:make-thread
-                       (lambda () (length (libarchive:with-archive-to-octets (w :format :zip)
-                                            (libarchive:add-entry w \"a\" :data \"a\"))))))))
-                    (format t \"~&OK ~D~%\" (length (mapcar #'sb-thread:join-thread threads))))")))
-    (multiple-value-bind (out err code)
-        (uiop:run-program (list* sb-ext:*runtime-pathname* "--core" (namestring sb-ext:*core-pathname*)
-                                 "--noinform" "--non-interactive" "--no-userinit" "--no-sysinit"
-                                 (loop for f in forms append (list "--eval" f)))
-                          :output :string :error-output :string :ignore-error-status t)
-      (is (and (zerop code) (search "OK 8" out)) "exit ~D~%~A~%~A" code out err))))
+  (multiple-value-bind (command eval-flag) (this-lisp-command)
+    (if (null command)
+        (skip "do not know how to start another ~A" (lisp-implementation-type))
+        (let* ((root (uiop:native-namestring (asdf:system-source-directory :libarchive)))
+               (forms
+                 (list "(require :asdf)"
+                       (format nil "(asdf:initialize-source-registry '(:source-registry (:tree ~S) ~
+                                    :ignore-inherited-configuration))" root)
+                       "(asdf:load-system :libarchive)"
+                       "(let ((threads (loop repeat 8 collect
+                           (bt:make-thread
+                             (lambda () (length (libarchive:with-archive-to-octets (w :format :zip)
+                                                  (libarchive:add-entry w \"a\" :data \"a\"))))))))
+                          (format t \"~&OK ~D~%\" (length (mapcar #'bt:join-thread threads))))"
+                       "(uiop:quit 0)")))
+          (multiple-value-bind (out err code)
+              (uiop:run-program (append command (loop for f in forms append (list eval-flag f)))
+                                :input nil :output :string :error-output :string
+                                :ignore-error-status t)
+            (is (and (zerop code) (search "OK 8" out)) "exit ~D~%~A~%~A" code out err))))))

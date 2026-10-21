@@ -90,7 +90,7 @@
 (define-condition test-stream-error (error) ()
   (:report "deliberate test stream failure"))
 
-(defclass octet-input-stream (sb-gray:fundamental-binary-input-stream)
+(defclass octet-input-stream (trivial-gray-streams:fundamental-binary-input-stream)
   ((data :initarg :data)
    (pos :initform 0)
    (fail-after :initarg :fail-after :initform nil)))
@@ -100,11 +100,11 @@
 
 (defmethod stream-element-type ((s octet-input-stream)) '(unsigned-byte 8))
 
-(defmethod sb-gray:stream-read-byte ((s octet-input-stream))
+(defmethod trivial-gray-streams:stream-read-byte ((s octet-input-stream))
   (with-slots (data pos) s
     (if (< pos (length data)) (prog1 (aref data pos) (incf pos)) :eof)))
 
-(defmethod sb-gray:stream-read-sequence ((s octet-input-stream) seq &optional (start 0) end)
+(defmethod trivial-gray-streams:stream-read-sequence ((s octet-input-stream) seq start end &key)
   (with-slots (data pos fail-after) s
     (when (and fail-after (>= pos fail-after))
       (error 'test-stream-error))
@@ -116,7 +116,7 @@
       (incf pos n)
       (+ start n))))
 
-(defclass octet-output-stream (sb-gray:fundamental-binary-output-stream)
+(defclass octet-output-stream (trivial-gray-streams:fundamental-binary-output-stream)
   ((data :initform (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)
          :reader octet-output-stream-data)
    (fail-after :initarg :fail-after :initform nil)))
@@ -126,15 +126,15 @@
 
 (defmethod stream-element-type ((s octet-output-stream)) '(unsigned-byte 8))
 
-(defmethod sb-gray:stream-write-byte ((s octet-output-stream) byte)
+(defmethod trivial-gray-streams:stream-write-byte ((s octet-output-stream) byte)
   (vector-push-extend byte (slot-value s 'data))
   byte)
 
-(defmethod sb-gray:stream-write-sequence ((s octet-output-stream) seq &optional (start 0) end)
+(defmethod trivial-gray-streams:stream-write-sequence ((s octet-output-stream) seq start end &key)
   (with-slots (data fail-after) s
     (when (and fail-after (>= (length data) fail-after))
       (error 'test-stream-error))
-    (loop for i from start below (or end (length seq))
+    (loop for i from (or start 0) below (or end (length seq))
           do (vector-push-extend (aref seq i) data))
     seq))
 

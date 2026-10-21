@@ -24,15 +24,31 @@ Homebrew's libarchive is keg-only: it is never linked into /opt/homebrew/lib,
 because macOS ships an older libarchive of its own. The keg directories come
 first so that the Homebrew build wins over the system one.")
 
-(cffi:define-foreign-library libarchive
-  ;; Soname first: the bare libarchive.so is in the -dev package, so a machine
-  ;; with only the runtime installed has libarchive.so.13 and nothing else.
-  ;; libarchive.2.dylib is the copy macOS ships in the dyld shared cache. It is
-  ;; old and last, a fallback rather than the target.
-  (:darwin (:or "libarchive.13.dylib" "libarchive.dylib" "libarchive.2.dylib"))
-  (:unix   (:or "libarchive.so.13" "libarchive.so"))
-  (:windows (:or "archive.dll" "libarchive.dll"))
-  (t (:default "libarchive")))
+(defvar *library-pathname* nil
+  "If non-NIL, the libarchive shared library file to open, instead of searching
+for one. Set it before the first call into libarchive.")
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *default-library-spec*
+    ;; Soname first: the bare libarchive.so is in the -dev package, so a machine
+    ;; with only the runtime installed has libarchive.so.13 and nothing else.
+    ;; libarchive.2.dylib is the copy macOS ships in the dyld shared cache. It is
+    ;; old and last, a fallback rather than the target.
+    '((:darwin (:or "libarchive.13.dylib" "libarchive.dylib" "libarchive.2.dylib"))
+      (:unix   (:or "libarchive.so.13" "libarchive.so"))
+      (:windows (:or "archive.dll" "libarchive.dll"))
+      (t (:default "libarchive")))))
+
+(defun define-libarchive ()
+  "(Re)define the LIBARCHIVE foreign library from *LIBRARY-PATHNAME*. Defined,
+not loaded as an anonymous library, because every DEFCFUN names LIBARCHIVE."
+  (eval `(cffi:define-foreign-library libarchive
+           ,@(if *library-pathname*
+                 `((t ,(uiop:native-namestring *library-pathname*)))
+                 *default-library-spec*))))
+
+(macrolet ((define () `(cffi:define-foreign-library libarchive ,@*default-library-spec*)))
+  (define))
 
 ;;; The C locale.
 ;;;
@@ -90,14 +106,15 @@ into libarchive to leave the locale alone.")
 ;;; loading is not something to do twice at once: two concurrent dlopens and
 ;;; setlocales crashed in archive_write_new. The flag is checked again under the
 ;;; lock, so once loaded the common path takes no lock at all.
-(defvar *load-lock* (sb-thread:make-mutex :name "libarchive load-libraries"))
+(defvar *load-lock* (bt:make-lock "libarchive load-libraries"))
 
 (defun load-libraries ()
   "Open libarchive if it is not already open, and see *ENSURE-UTF-8-LOCALE*.
 Idempotent and thread-safe; returns T."
   (unless *libraries-loaded*
-    (sb-thread:with-mutex (*load-lock*)
+    (bt:with-lock-held (*load-lock*)
       (unless *libraries-loaded*
+        (define-libarchive)
         (let ((cffi:*foreign-library-directories*
                 (append *library-directories* cffi:*foreign-library-directories*)))
           (cffi:load-foreign-library 'libarchive))
@@ -107,5 +124,8 @@ Idempotent and thread-safe; returns T."
   t)
 
 ;;; A restored image must not trust the flag it was dumped with.
-#+sbcl
-(pushnew (lambda () (setf *libraries-loaded* nil)) sb-ext:*init-hooks*)
+;;; ASDF's program-op restores through UIOP's hooks on every implementation;
+;;; SBCL's own hook also covers a plain SAVE-LISP-AND-DIE.
+(defun forget-loaded-libraries () (setf *libraries-loaded* nil))
+(uiop:register-image-restore-hook 'forget-loaded-libraries nil)
+#+sbcl (pushnew 'forget-loaded-libraries sb-ext:*init-hooks*)

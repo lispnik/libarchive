@@ -11,6 +11,8 @@ cffi-libffi, ghcr.io/ocicl/cffi@sha256:ff62b9cedea80fe2c6ea0701757e2b301b6ee9aaf
 cffi-tests, ghcr.io/ocicl/cffi@sha256:ff62b9cedea80fe2c6ea0701757e2b301b6ee9aafa1ae720966ff2611e94f76b, cffi-20260821-787d3cd/cffi-tests.asd
 cffi-toolchain, ghcr.io/ocicl/cffi@sha256:ff62b9cedea80fe2c6ea0701757e2b301b6ee9aafa1ae720966ff2611e94f76b, cffi-20260821-787d3cd/cffi-toolchain.asd
 cffi-uffi-compat, ghcr.io/ocicl/cffi@sha256:ff62b9cedea80fe2c6ea0701757e2b301b6ee9aafa1ae720966ff2611e94f76b, cffi-20260821-787d3cd/cffi-uffi-compat.asd
+cl-ppcre, ghcr.io/ocicl/cl-ppcre@sha256:bf073924cf4fd5957a4fd961a95d446ed0e53fa32a5002cbd2d52182874f45e5, cl-ppcre-20250606-a2ea581/cl-ppcre.asd
+cl-ppcre-unicode, ghcr.io/ocicl/cl-ppcre@sha256:bf073924cf4fd5957a4fd961a95d446ed0e53fa32a5002cbd2d52182874f45e5, cl-ppcre-20250606-a2ea581/cl-ppcre-unicode.asd
 cl-reexport, ghcr.io/ocicl/cl-reexport@sha256:c795feb3e3727a19e61797187eb31bac1e855b1332335d26752200a28e9b9da8, cl-reexport-20240503-03ad7a0/cl-reexport.asd
 cl-reexport-test, ghcr.io/ocicl/cl-reexport@sha256:c795feb3e3727a19e61797187eb31bac1e855b1332335d26752200a28e9b9da8, cl-reexport-20240503-03ad7a0/cl-reexport-test.asd
 clingon, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df742212bd0903c2fc6791871f, clingon-20260807-e7e936b/clingon.asd
@@ -27,5 +29,8 @@ trivial-backtrace-test, ghcr.io/ocicl/trivial-backtrace@sha256:89a3138695bb767c5
 trivial-features, ghcr.io/ocicl/trivial-features@sha256:ab71fa7a6cbef84578616795f3af8ebb09d3bce1e6b89da3fc80db19236cc5b4, trivial-features-20260908-828246a/trivial-features.asd
 trivial-features-tests, ghcr.io/ocicl/trivial-features@sha256:ab71fa7a6cbef84578616795f3af8ebb09d3bce1e6b89da3fc80db19236cc5b4, trivial-features-20260908-828246a/trivial-features-tests.asd
 trivial-garbage, ghcr.io/ocicl/trivial-garbage@sha256:e76c38568f7ff0a2564ab47e27e0b2293f00f258e6510f2abec4d46920f2c4db, trivial-garbage-20260829-f0663f7/trivial-garbage.asd
+trivial-gray-streams, ghcr.io/ocicl/trivial-gray-streams@sha256:9d702556e5973fd18e67642b18bd5a2f901972ef7d5b134615e2f5fd77396bb9, trivial-gray-streams-20260818-257d73e/trivial-gray-streams.asd
+trivial-gray-streams-test, ghcr.io/ocicl/trivial-gray-streams@sha256:9d702556e5973fd18e67642b18bd5a2f901972ef7d5b134615e2f5fd77396bb9, trivial-gray-streams-20260818-257d73e/trivial-gray-streams-test.asd
+uax-15, ghcr.io/ocicl/uax-15@sha256:98286ee7b08a849dd2bb8992ab7c4cda7f429f25e8815939297979a49e4b3dad, uax-15-0.1.3/uax-15.asd
 uffi, ghcr.io/ocicl/cffi@sha256:ff62b9cedea80fe2c6ea0701757e2b301b6ee9aafa1ae720966ff2611e94f76b, cffi-20260821-787d3cd/uffi-compat/uffi.asd
 with-user-abort, ghcr.io/ocicl/with-user-abort@sha256:c19560034f9909a7afb4110b5efd939a9f1e829d9ef9887797b98679f290c480, with-user-abort-20240503-a3db02e/with-user-abort.asd

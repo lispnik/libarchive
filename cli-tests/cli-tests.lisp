@@ -323,3 +323,110 @@
             (sb-int:unencapsulate 'libarchive/cli::terminal-available-p 'test)))
         (is (string= "read me" (read-file "out/proj/README")))
         (is (= 1 asked) "asked ~D times" asked)))))
+
+;;; x with entries chosen.
+
+(test extract-chosen-entries
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "p.tar" "proj" "loose.txt")
+    ;; A glob; a directory brings what is under it; * crosses /.
+    (la-ok "x" "-q" "p.tar" "-C" "o1" "proj/src/*.c")
+    (is-true (exists "o1/proj/src/main.c"))
+    (is-false (exists "o1/proj/src/main.o"))
+    (is-false (exists "o1/proj/README"))
+    (la-ok "x" "-q" "p.tar" "-C" "o2" "proj/src")
+    (is-true (exists "o2/proj/src/main.o"))
+    (is-false (exists "o2/proj/README"))
+    (la-ok "x" "-q" "p.tar" "-C" "o3" "*.o")
+    (is-true (exists "o3/proj/src/main.o"))
+    (is-false (exists "o3/proj/src/main.c"))
+    ;; The top level is what was chosen: one root extracts in place,
+    ;; several get a directory.
+    (la-ok "x" "-q" "p.tar" "-C" "o4" "loose.txt")
+    (is-true (exists "o4/loose.txt"))
+    (la-ok "x" "-q" "p.tar" "-C" "o5" "loose.txt" "proj/README")
+    (is-true (exists "o5/p/loose.txt"))
+    (is-true (exists "o5/p/proj/README"))
+    ;; A name that matches nothing fails, before anything is written.
+    (multiple-value-bind (code out err) (la "x" "p.tar" "-C" "o6" "proj/README" "nothere")
+      (declare (ignore out))
+      (is (= 1 code))
+      (is-true (search "nothere" err))
+      (is-false (exists "o6/")))
+    (la-ok "a" "-q" "l.txt.gz" "loose.txt")
+    (is (= 2 (la "x" "l.txt.gz" "loose.txt")))))
+
+;;; a -r.
+
+(defun dot-la-files ()
+  (remove-if-not (lambda (p) (search ".la-" (file-namestring p)))
+                 (uiop:directory-files *default-pathname-defaults*)))
+
+(test append-replaces-and-keeps
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "p.tar.gz" "proj")
+    (write-file "proj/README" "new readme")
+    (write-file "extra.txt" "extra")
+    (la-ok "a" "-r" "-q" "p.tar.gz" "proj/README" "extra.txt")
+    (let ((names (lines (la-ok "l" "p.tar.gz"))))
+      (is (equal '("extra.txt" "proj/" "proj/README" "proj/src/" "proj/src/main.c" "proj/src/main.o")
+                 (sort (copy-list names) #'string<))))
+    ;; Still a gzipped tar, and the new README replaced the old.
+    (libarchive:with-archive-reader (r (merge-pathnames "p.tar.gz"))
+      (libarchive:next-entry r)
+      (is (equal '("gzip") (libarchive:archive-filter-names r))))
+    (la-ok "x" "-q" "p.tar.gz" "-C" "o")
+    (is (string= "new readme" (read-file "o/p/proj/README")))
+    (is (string= "int main(void) { return 0; }" (read-file "o/p/proj/src/main.c")))
+    (is (null (dot-la-files)))))
+
+(test append-refusals
+  (in-scratch-directory
+    (make-project)
+    ;; -r on a missing archive makes it.
+    (la-ok "a" "-r" "-q" "new.zip" "loose.txt")
+    (is (equal '("loose.txt") (lines (la-ok "l" "new.zip"))))
+    ;; Without -r an existing archive is not touched.
+    (is (= 1 (la "a" "new.zip" "proj")))
+    (is (equal '("loose.txt") (lines (la-ok "l" "new.zip"))))
+    (la-ok "a" "-q" "l.txt.gz" "loose.txt")
+    (is (= 2 (la "a" "-r" "l.txt.gz" "loose.txt")))
+    ;; Encrypted entries are not copied out in the clear.
+    (la-ok "a" "-q" "-p" "pw" "s.zip" "proj")
+    (let ((before (alexandria:read-file-into-byte-vector (merge-pathnames "s.zip"))))
+      (multiple-value-bind (code out err) (la "a" "-r" "s.zip" "loose.txt")
+        (declare (ignore out))
+        (is (= 1 code))
+        (is-true (search "-p" err)))
+      (is (equalp before (alexandria:read-file-into-byte-vector (merge-pathnames "s.zip")))))
+    (la-ok "a" "-r" "-q" "-p" "pw" "s.zip" "loose.txt")
+    (la-ok "t" "-q" "-p" "pw" "s.zip")
+    (is (= 6 (length (lines (la-ok "l" "s.zip")))))  ; proj/ and its 4, and loose.txt
+    (is (null (dot-la-files)))))
+
+;;; diff.
+
+(test diff-against-disk
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "p.tar" "proj")
+    (is (string= "" (la-ok "diff" "p.tar")))
+    (la-ok "x" "-q" "p.tar" "-C" "copy")
+    (is (string= "" (la-ok "diff" "p.tar" "-C" "copy")))
+    (write-file "proj/README" "changed")
+    (delete-file (merge-pathnames "proj/src/main.o"))
+    (write-file "proj/src/new.c" "new")
+    (delete-file (merge-pathnames "proj/src/main.c"))
+    (ensure-directories-exist (merge-pathnames "proj/src/main.c/"))
+    (multiple-value-bind (code out) (la "diff" "p.tar")
+      (is (= 1 code))
+      (is (equal '("only in archive: proj/src/main.o"
+                   "only on disk: proj/src/new.c"
+                   "proj/README: contents differ"
+                   "proj/src/main.c: a directory on disk, a file in the archive")
+                 (sort (lines out) #'string<))))
+    (multiple-value-bind (code out) (la "diff" "-q" "p.tar")
+      (is (= 1 code))
+      (is (string= "" out)))))

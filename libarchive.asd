@@ -18,8 +18,8 @@
 (asdf:defsystem #:libarchive/ffi
   :description "Complete raw CFFI bindings to libarchive."
   :license     "MIT"
-  :version     "0.1.0"
-  :depends-on  (#:cffi)
+  :version     "0.2.0"
+  :depends-on  (#:cffi #:bordeaux-threads)
   :components ((:module "src"
                 :components ((:file "package")
                              (:file "library"     :depends-on ("package"))
@@ -36,8 +36,10 @@
 (asdf:defsystem #:libarchive
   :description "Common Lisp interface to libarchive: read, write and extract tar, zip, 7z, cpio, iso9660 and more."
   :license     "MIT"
-  :version     "0.1.0"
-  :depends-on  (#:libarchive/ffi #:bordeaux-threads #:trivial-garbage #:babel)
+  :version     "0.2.0"
+  :depends-on  (#:libarchive/ffi #:bordeaux-threads #:trivial-garbage #:babel
+               ;; SBCL normalizes Unicode itself; only macOS needs it (entry.lisp).
+               (:feature (:and :darwin (:not :sbcl)) #:uax-15))
   :components ((:module "src"
                 :components ((:file "api-package")
                              (:file "core"      :depends-on ("api-package"))
@@ -57,8 +59,8 @@
 (asdf:defsystem #:libarchive/tests
   :description "Test suite for libarchive."
   :license     "MIT"
-  :version     "0.1.0"
-  :depends-on  (#:libarchive #:fiveam)
+  :version     "0.2.0"
+  :depends-on  (#:libarchive #:fiveam #:trivial-gray-streams #:bordeaux-threads)
   :components ((:module "tests"
                 :serial t
                 :components ((:file "package")
@@ -83,18 +85,20 @@
 (asdf:defsystem #:libarchive/cli
   :description "la: extract, create, list and test archives of every kind libarchive knows."
   :license     "MIT"
-  :version     "0.1.0"
+  :version     "0.2.0"
   :depends-on  (#:libarchive #:clingon #:sb-posix)
   :components ((:module "cli"
                 :components ((:file "package")
                              (:file "util"    :depends-on ("package"))
+                             (:file "bundle"  :depends-on ("util"))
                              (:file "formats" :depends-on ("util"))
-                             (:file "main"    :depends-on ("util"))
+                             (:file "main"    :depends-on ("util" "bundle"))
                              ;; One file per command (list.lisp has l, t and i);
                              ;; each registers itself with main.lisp.
                              (:file "extract" :depends-on ("main" "formats"))
                              (:file "add"     :depends-on ("main" "formats" "extract"))
-                             (:file "list"    :depends-on ("main" "extract")))))
+                             (:file "list"    :depends-on ("main" "extract"))
+                             (:file "diff"    :depends-on ("main" "extract")))))
   :build-operation "program-op"
   :build-pathname  "bin/la"
   :entry-point     "libarchive/cli:main"
@@ -103,7 +107,7 @@
 (asdf:defsystem #:libarchive/cli/tests
   :description "Tests for la, run in-process."
   :license     "MIT"
-  :version     "0.1.0"
+  :version     "0.2.0"
   :depends-on  (#:libarchive/cli #:fiveam)
   :components ((:module "cli-tests"
                 :serial t

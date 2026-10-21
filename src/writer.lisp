@@ -139,6 +139,33 @@ NIL. If ENTRY has no size set and DATA is given, its size is set from DATA."
     (finish)
     nil))
 
+(defun transfer-entry (reader writer &optional (entry (reader-current-entry reader)))
+  "Write READER's current entry ENTRY to WRITER, data and all, streamed rather
+than read into memory. ENTRY is written as it stands, so it can be renamed or
+otherwise changed first. Returns the number of data bytes copied."
+  (cond ((not (eq (entry-type entry) :regular))
+         ;; Only files have data to copy. A zip stores a symlink's target as
+         ;; its data, but the entry already says where it points.
+         (setf (entry-size entry) 0)
+         (write-entry writer entry)
+         0)
+        ((not (entry-size-set-p entry))
+         ;; Zip read from a stream may not know the size until after the
+         ;; data, and tar must write it first.
+         (let ((data (read-entry-data reader)))
+           (write-entry writer entry (and (plusp (length data)) data))
+           (length data)))
+        (t
+         (checked writer (%archive-write-header (entry-pointer entry)))
+         (let ((buffer (make-array +default-block-size+ :element-type '(unsigned-byte 8)))
+               (total 0))
+           (loop for n = (read-entry-data-into reader buffer)
+                 until (zerop n)
+                 do (write-data writer buffer :end n)
+                    (incf total n))
+           (checked writer (%archive-write-finish-entry))
+           total))))
+
 (defun copy-stream-to-writer (writer stream)
   (let ((buffer (make-array +default-block-size+ :element-type '(unsigned-byte 8))))
     (loop for n = (read-sequence buffer stream)

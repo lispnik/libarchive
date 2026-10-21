@@ -96,7 +96,8 @@ written comes back as \"Gru\\u0308ße\". Elsewhere it does no normalization.
 Recomposing makes a name read back equal to the name written, and the same on
 every platform; APFS is normalization-insensitive, so nothing on disk changes."
   #+darwin (if (and string (find-if (lambda (c) (> (char-code c) 127)) string))
-               (sb-unicode:normalize-string string :nfc)
+               #+sbcl (sb-unicode:normalize-string string :nfc)
+               #-sbcl (uax-15:normalize string :nfc)
                string)
   #-darwin string)
 

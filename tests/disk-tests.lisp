@@ -3,13 +3,21 @@
 (def-suite libarchive-disk :in libarchive-all)
 (in-suite libarchive-disk)
 
-(defun stat-mode (path)
-  (multiple-value-bind (ok dev ino mode) (sb-unix:unix-lstat (uiop:native-namestring path))
-    (declare (ignore dev ino))
-    (and ok mode)))
+(defun lstat-entry (path)
+  "The mode and symlink target of PATH, not following a symlink: libarchive's
+own lstat, so the tests need nothing implementation-specific."
+  (load-libraries)
+  (let ((a (%archive-read-disk-new)))
+    (unwind-protect
+         (with-entry (e :pathname (uiop:native-namestring path))
+           (assert (<= 0 (%archive-read-disk-entry-from-file a (libarchive::entry-pointer e) -1
+                                                             (cffi:null-pointer))))
+           (values (entry-mode e) (entry-symlink e)))
+      (%archive-read-free a))))
 
-(defun symlink-target (path)
-  (sb-unix:unix-readlink (uiop:native-namestring path)))
+(defun stat-mode (path) (values (lstat-entry path)))
+
+(defun symlink-target (path) (nth-value 1 (lstat-entry path)))
 
 (test extract-sample-archive
   (with-temp-directory (dir)
@@ -118,8 +126,12 @@
                       (add-entry w "Grüße/日本語.txt" :data "konnichiwa")))
            (out (merge-pathnames "out/" dir)))
       (is (equal '("Grüße/日本語.txt") (extract-archive archive out)))
-      (is (string= "konnichiwa"
-                   (uiop:read-file-string (merge-pathnames "Grüße/日本語.txt" out))))
+      ;; Read back by Lisp, where Lisp can name the file: ECL before 23
+      ;; accepts no file name outside Latin-1.
+      (if (ignore-errors (probe-file (merge-pathnames "日本語" dir)) t)
+          (is (string= "konnichiwa"
+                       (uiop:read-file-string (merge-pathnames "Grüße/日本語.txt" out))))
+          (skip "~A cannot open a file named outside Latin-1" (lisp-implementation-type)))
       (let ((again (with-archive-to-octets (w :format :zip)
                      (archive-directory out w))))
         (is (equal '("Grüße/" "Grüße/日本語.txt")

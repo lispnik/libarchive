@@ -1,6 +1,6 @@
 # libarchive
 
-Common Lisp (SBCL) bindings to [libarchive](https://libarchive.org): read, write and
+Common Lisp bindings to [libarchive](https://libarchive.org): read, write and
 extract tar (pax, ustar, gnutar, v7), zip, 7z, cpio, iso9660, ar, xar, rar (read), cab
 (read), with gzip, bzip2, xz, lzma, zstd, lz4, lzip, compress, uuencode and base64 filters.
 
@@ -23,6 +23,9 @@ ocicl install                  # restores ocicl/ from ocicl.csv
 ```lisp
 (asdf:load-system :libarchive)
 ```
+
+Tested on SBCL (macOS and Linux), CCL and ECL (Linux). On ECL before 23, Lisp
+itself can't open files with names outside Latin-1; libarchive can.
 
 ## Use
 
@@ -109,6 +112,8 @@ cffi-callback-closures) aren't needed, and neither is libffi.
 
 ## Notes
 
+- `transfer-entry` copies a reader's current entry to a writer, streaming the data,
+  so an archive can be converted or rewritten without holding entries in memory.
 - A handle isn't thread-safe. Use one per thread; separate handles in separate threads
   are fine.
 - In-memory and stream output isn't padded except for uncompressed tar/cpio, which keep
@@ -116,13 +121,14 @@ cffi-callback-closures) aren't needed, and neither is libffi.
   compressed stream, and its own zstd reader rejects those zeros.
 - `archive-directory` stores hard links as separate copies.
 - The first call into libarchive sets `LC_CTYPE` to a UTF-8 locale if it isn't one:
-  SBCL never calls `setlocale`, and in the "C" locale libarchive mangles or refuses
+  Lisps don't generally call `setlocale`, and in the "C" locale libarchive mangles or refuses
   non-ASCII names (the pax writer crashes on them). Set `*ensure-utf-8-locale*` to NIL
   first to opt out.
 - On macOS libarchive decomposes names it reads (NFD); the entry accessors recompose
   them to NFC, so a name reads back as written.
 - Entry points newer than the library you load can be probed with
   `(foreign-function-available-p "archive_...")`.
+- `*library-pathname*` names a libarchive file to open instead of searching for one.
 
 ## la: the command-line tool
 
@@ -134,10 +140,13 @@ la a site.tar.zst site/ README.md     # create: format and compression from the 
 la a -x '*.o' -l 9 src.zip src/        # exclude, compression level
 la a -p secret private.zip notes/      # AES-256 encrypted zip
 la a notes.txt.xz notes.txt            # a bare compressed file
+la a -r site.tar.zst site/index.html   # add to an archive, replacing the old copy
 la x download.tar.gz                   # one top-level entry: extracted here as is
 la x photos.zip -C ~/Pictures          # several: into ~/Pictures/photos/ (photos-1/, ...)
 la x notes.txt.xz                      # decompresses to notes.txt
 la x --strip-components 1 pkg.tar.gz   # drop the leading pkg-1.0/
+la x src.tar.gz 'src/*.c' src/include  # only these entries (globs; directories recurse)
+la diff backup.tar.gz -C ~/project     # what has changed since the archive was made
 la l -l release.7z                     # list; t tests, i describes
 curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F)
 ```
@@ -151,18 +160,46 @@ curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F
   on the terminal, once per command.
 - **Symlinks:** a symlink named on `la a`'s command line is stored as a symlink, as tar
   does; name `link/` to store what it points to.
+- **`la a -r`** works for every format, compressed or not: it writes a new archive
+  with the old entries the new files don't replace, then the new ones, and only then
+  replaces the original. An encrypted zip needs `-p` so its entries stay encrypted.
+- **`la x ENTRY...`** extracts only the named entries. Each is a name or a glob
+  (`*` and `?`, and `*` matches `/` too), and a directory brings everything under it.
+  A name that matches nothing is an error, and nothing is extracted.
+- **`la diff`** compares each entry with the file at the same path under `-C DIR`
+  (default: here): type, contents, symlink target and permissions, and with `-t`
+  modification times. It also lists files on disk, in the directories the archive
+  covers, that the archive lacks. It exits 1 if anything differs.
 
-Prebuilt binaries for macOS arm64 and Linux x86_64/aarch64 are on the
-[releases page](https://github.com/lispnik/libarchive/releases).
-
-Exit codes: 0 for success, 1 when something failed, 2 for a usage error. The binary opens
-libarchive when it runs, so it uses whichever libarchive the machine has.
+Exit codes: 0 for success, 1 when something failed, 2 for a usage error.
 `la --help` and `la <command> --help` describe every option.
+
+### Installing la
+
+```sh
+brew install lispnik/tap/la
+```
+
+Or download a binary from the [releases page](https://github.com/lispnik/libarchive/releases):
+
+| | runs on |
+|---|---|
+| `la-macos-arm64` | macOS 15 or later |
+| `la-macos-x86_64` | macOS 14 or later |
+| `la-linux-x86_64`, `la-linux-aarch64` | glibc 2.28 or later (RHEL 8, Debian 10, Ubuntu 20.04 and newer) |
+
+The release binaries have libarchive built in (3.8.10, with zlib, bzip2, xz, zstd, lz4,
+expat, and OpenSSL or CommonCrypto), so nothing else needs installing.
+`LA_LIBARCHIVE=system` makes one use the installed libarchive instead, and
+`LA_LIBARCHIVE=/path/to/libarchive.so` a particular file. A `make la` build uses the
+installed libarchive, unless `LA_BUNDLE_LIBARCHIVE` names one to build in:
+`ci/build-libarchive.sh DIR` makes one.
 
 ## Develop
 
 ```sh
 make test       # FiveAM suite (hermetic source registry: this tree + ocicl/)
+make test LISP=ecl   # ... on ECL, or LISP=ccl
 make check      # test + load report
 make examples   # run examples/*.lisp, each checking its own output
 make la         # build bin/la

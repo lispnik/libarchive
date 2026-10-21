@@ -9,3 +9,6 @@ ocicl/
 
 # make la
 bin/
+.release/
+dist/
+la-*.tar.gz

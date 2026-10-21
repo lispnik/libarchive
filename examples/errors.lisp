@@ -11,6 +11,10 @@
 ;;;       ARCHIVE-RETRY                 ARCHIVE_RETRY: try that again
 ;;;       ARCHIVE-FATAL-ERROR           ARCHIVE_FATAL: only CLOSE-ARCHIVE is left
 
+;;; Gray streams are not in the standard; trivial-gray-streams papers over
+;;; the differences between implementations.
+(asdf:load-system :trivial-gray-streams)
+
 (defpackage #:libarchive-examples/errors
   (:use #:cl #:libarchive))
 
@@ -31,12 +35,12 @@
 (define-condition connection-lost (error) ()
   (:report "the connection was lost"))
 
-(defclass flaky-stream (sb-gray:fundamental-binary-input-stream)
+(defclass flaky-stream (trivial-gray-streams:fundamental-binary-input-stream)
   ((data :initarg :data) (position :initform 0) (fail-at :initarg :fail-at)))
 
 (defmethod stream-element-type ((s flaky-stream)) '(unsigned-byte 8))
 
-(defmethod sb-gray:stream-read-sequence ((s flaky-stream) seq &optional (start 0) end)
+(defmethod trivial-gray-streams:stream-read-sequence ((s flaky-stream) seq start end &key)
   (with-slots (data position fail-at) s
     (when (>= position fail-at) (error 'connection-lost))
     (let ((n (min 4096 (- (or end (length seq)) start) (- (length data) position))))

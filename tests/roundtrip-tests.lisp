@@ -137,3 +137,53 @@
 (test locale-has-a-utf-8-codeset
   (load-libraries)
   (is (libarchive::utf-8-locale-name-p (libarchive::setlocale-ctype nil))))
+
+(defun transfer-all (source &rest writer-keys)
+  "Every entry of SOURCE through TRANSFER-ENTRY, renamed under copy/; returns the
+new archive's octets and the bytes copied."
+  (let ((bytes 0))
+    (values (apply #'call-with-octets-writer
+                   (lambda (w)
+                     (with-archive-reader (r source)
+                       (do-archive-entries (e r)
+                         (setf (entry-pathname e) (format nil "copy/~A" (entry-pathname e)))
+                         (incf bytes (transfer-entry r w)))))
+                   writer-keys)
+            bytes)))
+
+(defun call-with-octets-writer (function &rest writer-keys)
+  (let ((w (apply #'open-archive-writer :octets writer-keys)))
+    (funcall function w)
+    (close-archive w)
+    (writer-octets w)))
+
+(test transfer-entry-streams-every-kind-of-entry
+  (let* ((big (let ((v (make-array 300000 :element-type '(unsigned-byte 8))))
+                (dotimes (i (length v) v) (setf (aref v i) (mod (* 31 i) 256)))))
+         (zip (with-archive-to-octets (w :format :zip)
+                (add-entry w "d/")
+                (add-entry w "d/big" :data big)
+                (add-entry w "d/empty" :data "")
+                (add-entry w "d/link" :symlink "big"))))
+    ;; From a seekable source, and from a stream that cannot seek, where zip
+    ;; may not know an entry's size before its data. Nor its type: that is in
+    ;; the central directory at the end, so streamed, the symlink is a file
+    ;; holding its target.
+    (loop for source in (list zip (make-octet-input-stream zip))
+          for streamed in '(nil t) do
+      (multiple-value-bind (tar bytes) (transfer-all source :format :pax-restricted :filters :zstd)
+        (is (= (+ (length big) (if streamed 3 0)) bytes))
+        (with-archive-reader (r tar)
+          (let ((seen '()))
+            (do-archive-entries (e r)
+              (push (entry-pathname e) seen)
+              (cond ((string= (entry-pathname e) "copy/d/big")
+                     (is (octets= big (read-entry-data r))))
+                    ((string= (entry-pathname e) "copy/d/link")
+                     (if streamed
+                         (is (string= "big" (read-entry-string r)))
+                         (is (string= "big" (entry-symlink e)))))
+                    ((string= (entry-pathname e) "copy/d/empty")
+                     (is (zerop (length (read-entry-data r)))))))
+            (is (equal '("copy/d/" "copy/d/big" "copy/d/empty" "copy/d/link")
+                       (sort seen #'string<)))))))))

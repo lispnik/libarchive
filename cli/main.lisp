@@ -2,7 +2,7 @@
 
 (in-package #:libarchive/cli)
 
-(defparameter *version* "0.1.0")
+(defparameter *version* "0.2.0")
 
 ;;; Each command file calls REGISTER-COMMAND with a function that makes its
 ;;; clingon command. The top-level command is built afresh on every RUN, so the
@@ -15,19 +15,21 @@
         (append (remove name *command-makers* :key #'car :test #'string=)
                 (list (cons name maker)))))
 
-(defparameter *command-order* '("extract" "add" "list" "test" "info"))
+(defparameter *command-order* '("extract" "add" "list" "test" "info" "diff"))
 
 (defun top-level-command ()
   (clingon:make-command
    :name "la"
-   :version (format nil "~A~%~A" *version* (version-details))
+   :version (format nil "~A~%~A (~A)" *version* (version-details) *libarchive-origin*)
    :description "extract, create, list and test archives of every kind libarchive knows"
    :long-description
-   "la x ARCHIVE         extract (several roots: into a new directory)
-la a ARCHIVE FILE... create; the format comes from the name
-la l ARCHIVE         list (-l for the long form)
-la t ARCHIVE         read everything, checking the data
-la i ARCHIVE         format, compression and sizes
+   "la x ARCHIVE [ENTRY...]  extract (several roots: into a new directory)
+la a ARCHIVE FILE...     create; the format comes from the name
+la a -r ARCHIVE FILE...  add to it, replacing entries of the same name
+la l ARCHIVE             list (-l for the long form)
+la t ARCHIVE             read everything, checking the data
+la i ARCHIVE             format, compression and sizes
+la diff ARCHIVE          compare with the files here (-C DIR: there)
 
 Writes tar (pax, ustar, gnu, v7), zip, 7z, cpio, iso9660, xar,
 ar, shar, mtree and warc; reads those and rar, cab and lha too.
@@ -89,6 +91,7 @@ Never exits, so tests can call it."
 
 (defun main ()
   "The la binary's entry point."
+  (choose-libarchive)
   (let ((code (run (uiop:command-line-arguments))))
     ;; Output is buffered, so `la l x.tar | head' finds the pipe closed here,
     ;; after RUN. That is how the listing was meant to end, not an error.

@@ -30,10 +30,14 @@ jobs:
           - os: linux
             arch: aarch64
             runner: ubuntu-24.04-arm
-          # Homebrew's current, keg-only libarchive, as in development.
+          # Homebrew's current, keg-only libarchive, as in development: under
+          # /opt/homebrew on Apple silicon, /usr/local on Intel.
           - os: macos
             arch: arm64
             runner: macos-15
+          - os: macos
+            arch: x86_64
+            runner: macos-15-intel
 
     steps:
       - uses: actions/checkout@v7
@@ -92,14 +96,158 @@ jobs:
       - name: Test
         run: ci/test.sh
 
-      # ci/test.sh has built and tested bin/la. Package it on every run, so any
-      # build can be downloaded and tried, and the release job below has it.
-      - name: Package la
+  # The library (not la, which is SBCL only) on the other free implementations
+  # that run on Linux. SBCL still builds ocicl.
+  other-lisps:
+    name: ${{ matrix.lisp }} linux/x86_64
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        lisp: [ccl, ecl]
+    env:
+      # ECL encodes file names by the locale, and refuses non-ASCII ones in "C".
+      LC_ALL: C.UTF-8
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install libarchive, SBCL and ${{ matrix.lisp }}
         run: |
-          mkdir -p dist
-          cp bin/la LICENSE README.md dist/
-          tar -czf la-${{ matrix.os }}-${{ matrix.arch }}.tar.gz -C dist la LICENSE README.md
-          ls -l la-*.tar.gz
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sbcl libarchive-dev pkg-config zip
+          if [ "${{ matrix.lisp }}" = ecl ]; then
+            sudo apt-get install -y -qq --no-install-recommends ecl
+            echo "LISP=ecl" >> "$GITHUB_ENV"
+          else
+            curl -fsSL https://github.com/Clozure/ccl/releases/download/v1.13/ccl-1.13-linuxx86.tar.gz \
+              | tar -xz -C "$RUNNER_TEMP"
+            echo "LISP=$RUNNER_TEMP/ccl/lx86cl64" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache ocicl
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/bin
+            ~/.local/share/ocicl
+          key: ocicl-linux-x86_64-v1
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: ocicl
+          key: deps-linux-x86_64-${{ hashFiles('ocicl.csv') }}
+
+      - name: Install ocicl if it is not cached
+        run: |
+          if ! command -v ocicl >/dev/null && [ ! -x ~/.local/bin/ocicl ]; then
+            git clone --depth 1 --quiet https://github.com/ocicl/ocicl.git "$RUNNER_TEMP/ocicl"
+            (cd "$RUNNER_TEMP/ocicl" && sbcl --non-interactive --load setup.lisp > /dev/null)
+            test -x ~/.local/bin/ocicl
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set up ocicl
+        run: ocicl setup > /dev/null
+
+      - name: Test
+        run: ci/test.sh
+
+  # The release la: libarchive built in (ci/build-libarchive.sh), so it needs
+  # none installed. Linux builds in Ubuntu 20.04 (whose binaries need only glibc
+  # 2.28, which is checked); SBCL is
+  # built there too, because the binary carries SBCL's runtime. Every run
+  # uploads the result, so any commit's binaries can be downloaded and tried.
+  build:
+    name: la ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # A cold cache builds SBCL and OpenSSL: about 15 minutes.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: x86_64,  runner: ubuntu-24.04 }
+          - { os: linux, arch: aarch64, runner: ubuntu-24.04-arm }
+          - { os: macos, arch: arm64,   runner: macos-15 }
+          - { os: macos, arch: x86_64,  runner: macos-15-intel }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install SBCL
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends sbcl
+          else
+            brew install sbcl
+          fi
+
+      - name: Cache ocicl
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/bin
+            ~/.local/share/ocicl
+          key: ocicl-${{ matrix.os }}-${{ matrix.arch }}-v1
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: ocicl
+          key: deps-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('ocicl.csv') }}
+
+      # The bundled libarchive, its dependencies and (on Linux) SBCL take a
+      # while to build, and change only when these scripts do.
+      - name: Cache the release toolchain
+        uses: actions/cache@v6
+        with:
+          path: .release
+          key: release-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('ci/build-libarchive.sh', 'ci/build-sbcl.sh', 'ci/release-build.sh') }}
+
+      - name: Install ocicl if it is not cached
+        run: |
+          if ! command -v ocicl >/dev/null && [ ! -x ~/.local/bin/ocicl ]; then
+            git clone --depth 1 --quiet https://github.com/ocicl/ocicl.git "$RUNNER_TEMP/ocicl"
+            (cd "$RUNNER_TEMP/ocicl" && sbcl --non-interactive --load setup.lisp > /dev/null)
+            test -x ~/.local/bin/ocicl
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependencies
+        run: |
+          ocicl setup > /dev/null
+          ci/deps.sh
+
+      # Ubuntu 20.04: glibc 2.31, and still served (it is in extended support;
+      # Debian 11, the other glibc 2.31 choice, has left the mirrors).
+      - name: Build and check (Linux, in Ubuntu 20.04)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:20.04 ci/release-build.sh linux ${{ matrix.arch }}
+          sudo chown -R "$(id -u):$(id -g)" .
+
+      # Without Homebrew's libarchive, to show the binary does not need it.
+      - name: Build and check (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew uninstall --ignore-dependencies libarchive 2>/dev/null || true
+          ci/release-build.sh macos ${{ matrix.arch }}
+
+      # And on the runner itself, a current distribution, and on the oldest
+      # glibc it is meant for: 2.28, AlmaLinux 8 (as RHEL 8).
+      - name: Check on the runner and on glibc 2.28 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bin/la --version
+          ci/cli-smoke.sh bin/la
+          # dnf's mirrors stall now and then: bounded, and retried.
+          docker run --rm -v "$PWD:/w" -w /w almalinux:8 sh -c '
+            for i in 1 2 3; do
+              timeout 300 dnf -q -y --setopt=timeout=30 install tar gzip zip unzip diffutils >/dev/null && break
+              echo "dnf attempt $i failed"; sleep 10
+            done
+            ldd --version | head -1 && bin/la --version && ci/cli-smoke.sh bin/la'
 
       - name: Upload la
         uses: actions/upload-artifact@v7
@@ -108,10 +256,10 @@ jobs:
           path: la-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
-  # A v* tag publishes the three binaries, once every platform has passed.
+  # A v* tag publishes the four binaries, once everything has passed.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, other-lisps, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -130,24 +278,32 @@ jobs:
         run: |
           set -eux
           ls -l dist
+          (cd dist && sha256sum la-*.tar.gz > SHA256SUMS)
           cat > notes.md <<'NOTES'
           `la` extracts, creates, lists and tests archives in every format libarchive
-          handles. Each tarball holds the `la` binary (an SBCL image), LICENSE and README.
+          handles. Each tarball holds the `la` binary (an SBCL image with libarchive
+          built in), LICENSE and README. Nothing else needs to be installed.
 
-          `la` opens libarchive when it runs, so it needs one installed:
-
-          | Download | Needs |
+          | Download | Runs on |
           |---|---|
-          | `la-macos-arm64.tar.gz` | macOS 15 or later on Apple silicon; `brew install libarchive` |
-          | `la-linux-x86_64.tar.gz` | glibc 2.39 or later (Ubuntu 24.04+); `apt install libarchive13t64` |
+          | `la-macos-arm64.tar.gz` | macOS 15 or later, Apple silicon |
+          | `la-macos-x86_64.tar.gz` | macOS 14 or later, Intel |
+          | `la-linux-x86_64.tar.gz` | Linux with glibc 2.28 or later (RHEL 8, Debian 10, Ubuntu 20.04 and newer) |
           | `la-linux-aarch64.tar.gz` | the same, on arm64 |
+
+          ```sh
+          brew install lispnik/tap/la
+          ```
+
+          or
 
           ```sh
           tar -xzf la-*.tar.gz && sudo install la /usr/local/bin/
           ```
 
           On macOS a downloaded binary is quarantined; clear it with
-          `xattr -d com.apple.quarantine la`.
+          `xattr -d com.apple.quarantine la`. `LA_LIBARCHIVE=system` makes `la` use an
+          installed libarchive instead of its own.
           NOTES
-          gh release create "$GITHUB_REF_NAME" dist/la-*.tar.gz \
+          gh release create "$GITHUB_REF_NAME" dist/la-*.tar.gz dist/SHA256SUMS \
             --title "la $GITHUB_REF_NAME" --notes-file notes.md --verify-tag

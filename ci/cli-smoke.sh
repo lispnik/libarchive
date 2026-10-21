@@ -44,6 +44,13 @@ check "  content intact"   cmp proj/src/main.c out/p/proj/src/main.c
 
 check "l | head is not an error" sh -c "'$LA' l -l p.tar.zst 2>err | head -1 >/dev/null; test ! -s err"
 
+# Choosing entries, appending, comparing.
+check "x chosen entries"   "$LA" x -q p.tar.zst -C chosen 'proj/src/*.c'
+check "  only those"       sh -c "test -f chosen/proj/src/main.c && test ! -e chosen/proj/README"
+check "diff of a fresh copy" "$LA" diff -q p.tar.zst -C out/p
+check "diff sees a change" sh -c "echo x >> out/p/loose.txt; '$LA' diff -q p.tar.zst -C out/p; test \$? -eq 1"
+check "a -r appends"       sh -c "'$LA' a -r -q p.tar.zst out/p/loose.txt && test \$('$LA' l p.tar.zst | wc -l) -eq 6"
+
 # Bare compression both ways.
 check "a .gz of one file"  "$LA" a -q loose.txt.gz loose.txt
 check "x .gz decompresses" "$LA" x -q loose.txt.gz -C gz

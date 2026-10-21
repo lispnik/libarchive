@@ -59,10 +59,43 @@ ARCHIVE-NAME's extension."
           (push '("zip:encryption" . "aes256") options))
         (values format filters (nreverse options) passphrase)))))
 
+(defun add-inputs (w inputs disk-paths format &key read-disk-flags self excludes verbose)
+  "Write each of INPUTS (found at DISK-PATHS) to the writer W; return the
+number of entries written."
+  (let ((count 0))
+    (loop for input in inputs
+          for disk in disk-paths
+          for name = (stored-name input)
+          do (cond
+               ((eq format :raw)
+                (add-entry w (or name (file-namestring disk)) :data disk)
+                (incf count))
+               ;; A symlink named on the command line is stored as a symlink,
+               ;; as tar does, not as what it points to.
+               ((symlink-p disk)
+                (let ((stat (sb-posix:lstat (uiop:native-namestring disk))))
+                  (add-entry w (or name (file-namestring disk))
+                             :symlink (sb-posix:readlink (uiop:native-namestring disk))
+                             :mtime (+ (sb-posix:stat-mtime stat)
+                                       (encode-universal-time 0 0 0 1 1 1970 0))))
+                (when verbose (format t "~A~%" (or name (file-namestring disk))))
+                (incf count))
+               (t
+                (incf count
+                      (archive-directory
+                       disk w :name name :read-disk-flags read-disk-flags
+                       :directories (not (member format *formats-without-directories*))
+                       :filter (entry-filter disk name self excludes verbose))))))
+    count))
+
+(defun file-size (path)
+  (with-open-file (in path :element-type '(unsigned-byte 8)) (file-length in)))
+
 (defun add/handler (cmd)
   (let* ((args (clingon:command-arguments cmd))
          (*quiet* (clingon:getopt cmd :quiet))
          (verbose (clingon:getopt cmd :verbose))
+         (appending (clingon:getopt cmd :append))
          (excludes (clingon:getopt cmd :exclude))
          (read-disk-flags (if (clingon:getopt cmd :no-xattrs) '(:no-xattr) '()))
          (base (user-directory (or (clingon:getopt cmd :directory) "."))))
@@ -76,51 +109,107 @@ ARCHIVE-NAME's extension."
                                 collect path))
               (target (unless (stdio-p archive-name) (user-file archive-name))))
           (when (eq format :raw)
+            (when appending
+              (usage-error "~A is a compressed file, not an archive: there is nothing to add to"
+                           archive-name))
             (unless (and (= 1 (length inputs)) (not (uiop:directory-exists-p (first disk-paths))))
               (usage-error "~A is a compressed file, not an archive: give exactly one file, ~
                             or name it .tar~A" archive-name
                             (nth-value 2 (archive-kind archive-name)))))
-          (when (and target (lexists-p target) (not (clingon:getopt cmd :force)))
-            (fail "~A already exists (use -f to replace it)" archive-name))
-          (let ((count 0) (ok nil))
-            (unwind-protect
-                 (progn
-                   (with-archive-writer (w (or target (stdout-octets))
-                                           :format format :filters filters
-                                           :options options :passphrase passphrase)
-                     (let ((self (and target (uiop:native-namestring (truename target)))))
-                       (loop for input in inputs
-                             for disk in disk-paths
-                             for name = (stored-name input)
-                             do (cond
-                                  ((eq format :raw)
-                                   (add-entry w (or name (file-namestring disk)) :data disk)
-                                   (incf count))
-                                  ;; A symlink named on the command line is stored as
-                                  ;; a symlink, as tar does, not as what it points to.
-                                  ((symlink-p disk)
-                                   (let ((stat (sb-posix:lstat (uiop:native-namestring disk))))
-                                     (add-entry w (or name (file-namestring disk))
-                                                :symlink (sb-posix:readlink (uiop:native-namestring disk))
-                                                :mtime (+ (sb-posix:stat-mtime stat)
-                                                          (encode-universal-time 0 0 0 1 1 1970 0))))
-                                   (when verbose (format t "~A~%" (or name (file-namestring disk))))
-                                   (incf count))
-                                  (t
-                                    (incf count
-                                          (archive-directory
-                                           disk w :name name :read-disk-flags read-disk-flags
-                                           :directories (not (member format *formats-without-directories*))
-                                           :filter (entry-filter disk name self excludes verbose))))))))
-                   (setf ok t))
-              ;; A failed archive is removed rather than left half-written.
-              (when (and target (not ok))
-                (ignore-errors (delete-file target))))
-            (when target
-              (note "~A: ~D entr~:@P, ~A" archive-name count
-                    (human-size (with-open-file (in target :element-type '(unsigned-byte 8))
-                                  (file-length in)))))
-            0))))))
+          (when (and appending (null target))
+            (usage-error "--append needs an archive file, not standard output"))
+          (let ((add-keys (list :read-disk-flags read-disk-flags :excludes excludes :verbose verbose))
+                (writer-keys (list :format format :filters filters :options options
+                                   :passphrase passphrase)))
+            (cond ((and appending (lexists-p target))
+                   (append-to-archive cmd archive-name target inputs disk-paths format
+                                      writer-keys add-keys))
+                  ((and target (lexists-p target) (not (clingon:getopt cmd :force)))
+                   (fail "~A already exists (use -f to replace it, or -r to add to it)"
+                         archive-name))
+                  (t
+                   (let ((count 0) (ok nil))
+                     (unwind-protect
+                          (let ((w (apply #'open-archive-writer (or target (stdout-octets))
+                                          writer-keys)))
+                            ;; As WITH-ARCHIVE-WRITER: a failure aborts, with no trailer.
+                            (unwind-protect
+                                 (progn
+                                   (setf count (apply #'add-inputs w inputs disk-paths format
+                                                      :self (and target (uiop:native-namestring
+                                                                         (truename target)))
+                                                      add-keys))
+                                   (setf ok t))
+                              (close-archive w :abort (not ok))))
+                       ;; A failed archive is removed rather than left half-written.
+                       (when (and target (not ok))
+                         (ignore-errors (delete-file target))))
+                     (when target
+                       (note "~A: ~D entr~:@P, ~A" archive-name count (human-size (file-size target))))
+                     0)))))))))
+
+(defun private-file (directory)
+  "A new, empty file in DIRECTORY that only this user can read."
+  (multiple-value-bind (fd name)
+      (sb-posix:mkstemp (concatenate 'string (uiop:native-namestring directory) ".la-XXXXXX"))
+    (sb-posix:close fd)
+    (uiop:parse-native-namestring name)))
+
+(defun append-to-archive (cmd archive-name target inputs disk-paths format writer-keys add-keys)
+  "Rewrite TARGET with INPUTS added: entries of the same name are replaced, the
+rest kept, written in the format, compression and encryption the options give.
+The new files are spooled first, so that their names are known before the old
+entries are copied, and the original is replaced only once the new archive is
+complete."
+  (let* ((passphrase (getf writer-keys :passphrase))
+         (self (uiop:native-namestring (truename target)))
+         (spool (private-file (uiop:temporary-directory)))
+         (out nil)
+         (ok nil) (added 0) (kept 0) (replaced 0))
+    (unwind-protect
+         (progn
+           ;; 1. The new entries, as given, in an uncompressed pax spool.
+           (with-archive-writer (w spool :format :pax-restricted)
+             (setf added (apply #'add-inputs w inputs disk-paths format :self self add-keys)))
+           ;; Made only now, next to the archive (so the rename cannot cross
+           ;; file systems), so that adding "." does not take it in too.
+           (setf out (private-file (uiop:pathname-directory-pathname self)))
+           (let ((new-names (make-hash-table :test #'equal))
+                 (w (apply #'open-archive-writer out writer-keys))
+                 (written nil))
+             (with-archive-reader (r spool)
+               (do-archive-entries (e r)
+                 (setf (gethash (clean-name (entry-pathname e)) new-names) t)))
+             ;; 2. The old entries the new ones do not replace, then the new.
+             (unwind-protect
+                  (progn
+                    (with-archive-reader (r target :passphrase
+                                            (reader-passphrase
+                                             (passphrase-source cmd archive-name)))
+                      (do-archive-entries (e r)
+                        (cond ((gethash (clean-name (entry-pathname e)) new-names)
+                               (incf replaced))
+                              (t
+                               (when (and (entry-data-encrypted-p e) (null passphrase))
+                                 (fail "~A has encrypted entries: give -p to keep them encrypted"
+                                       archive-name))
+                               (transfer-entry r w e)
+                               (incf kept)))))
+                    (with-archive-reader (r spool)
+                      (do-archive-entries (e r)
+                        (transfer-entry r w e)))
+                    (setf written t))
+               (close-archive w :abort (not written))))
+           ;; 3. Into place, with the original's permissions.
+           (sb-posix:chmod (uiop:native-namestring out)
+                           (logand #o7777 (sb-posix:stat-mode (sb-posix:stat self))))
+           (sb-posix:rename (uiop:native-namestring out) self)
+           (setf ok t))
+      (ignore-errors (delete-file spool))
+      (when (and out (not ok)) (ignore-errors (delete-file out))))
+    (note "~A: ~D added~@[ (~D replacing older)~], ~D kept, ~A" archive-name
+          added (and (plusp replaced) replaced) kept (human-size (file-size target)))
+    0))
 
 (defun entry-filter (disk name self excludes verbose)
   "ARCHIVE-DIRECTORY's filter for the input DISK stored as NAME: leaves out the
@@ -166,6 +255,8 @@ archive being written, and anything --exclude matches; prints names if VERBOSE."
                                               :description "do not store extended attributes")
                    (clingon:make-option :flag :short-name #\f :long-name "force" :key :force
                                               :description "replace ARCHIVE if it exists")
+                   (clingon:make-option :flag :short-name #\r :long-name "append" :key :append
+                                              :description "add to ARCHIVE if it exists, replacing entries of the same name")
                    (clingon:make-option :flag :short-name #\v :long-name "verbose" :key :verbose
                                               :description "print each name as it is added")
                    (clingon:make-option :flag :short-name #\q :long-name "quiet" :key :quiet

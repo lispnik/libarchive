@@ -30,12 +30,37 @@ nothing is left. A trailing / stays."
              (format nil "~{~A~^/~}~:[~;/~]" (nthcdr count parts)
                      (char= #\/ (char name (1- (length name)))))))))
 
-(defun survey (archive passphrase strip)
+(defun clean-name (name)
+  (string-right-trim "/" (strip-dot-slash name)))
+
+(defun selects-p (pattern name)
+  "True if PATTERN, a glob, names NAME or a directory NAME is under:
+\"src\" and \"s*c\" select src/main.c, as do \"src/*.c\" and \"*.c\"."
+  (let ((pattern (clean-name pattern))
+        (name (clean-name name)))
+    (or (glob-match-p pattern name)
+        (loop for i = (position #\/ name) then (position #\/ name :start (1+ i))
+              while i
+              thereis (glob-match-p pattern (subseq name 0 i))))))
+
+(defun make-selector (patterns)
+  "A function of an entry name: true if PATTERNS is empty or one of them
+selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
+  (let ((used '()))
+    (values (lambda (name)
+              (or (null patterns)
+                  (let ((hit (find-if (lambda (p) (selects-p p name)) patterns)))
+                    (when hit (pushnew hit used :test #'string=))
+                    hit)))
+            (lambda () (remove-if (lambda (p) (member p used :test #'string=)) patterns)))))
+
+(defun survey (archive passphrase strip &optional (selected (constantly t)))
   "The archive's top-level names, and whether it is a bare compressed file."
   (with-archive-reader (r archive :formats '(:all :raw) :passphrase (reader-passphrase passphrase))
     (let ((roots '()))
       (do-archive-entries (e r)
-        (let* ((name (strip-components (entry-pathname e) strip))
+        (let* ((name (and (funcall selected (entry-pathname e))
+                          (strip-components (entry-pathname e) strip)))
                (root (and name (entry-root name))))
           (when root (pushnew root roots :test #'string=))))
       (values (nreverse roots)
@@ -80,27 +105,37 @@ nothing is left. A trailing / stays."
         (overwrite (clingon:getopt cmd :overwrite))
         (strip (or (clingon:getopt cmd :strip-components) 0))
         (destination (user-directory (or (clingon:getopt cmd :directory) "."))))
-    (unless (= 1 (length args))
-      (usage-error "x takes one archive (see la x --help)"))
+    (when (null args)
+      (usage-error "x takes an archive, and optionally the entries to extract (see la x --help)"))
     (when (minusp strip) (usage-error "--strip-components takes a count of 0 or more"))
-    (let* ((name (first args))
-           (passphrase (passphrase-source cmd (display-name name))))
-      (call-with-input-archive
-       name
-       (lambda (archive)
-         (if (eq :raw (archive-kind name))
-             ;; x.txt.gz is a compressed file, by its name. Do not let
-             ;; libarchive guess: a one-line text file looks enough like an
-             ;; mtree manifest that format detection takes it for one.
-             (extract-raw archive name destination passphrase overwrite)
-             (multiple-value-bind (roots raw filters) (survey archive passphrase strip)
-               (cond ((and raw filters)
-                      (extract-raw archive name destination passphrase overwrite))
-                     (raw (fail "~A is not an archive" (display-name name)))
-                     (t (extract-into archive name destination roots passphrase overwrite
-                                      verbose strip))))))))))
+    (destructuring-bind (name &rest patterns) args
+      (let ((passphrase (passphrase-source cmd (display-name name))))
+        (flet ((raw (archive)
+                 (when patterns
+                   (usage-error "~A is a compressed file, not an archive: there are no entries to choose"
+                                (display-name name)))
+                 (extract-raw archive name destination passphrase overwrite)))
+          (call-with-input-archive
+           name
+           (lambda (archive)
+             (if (eq :raw (archive-kind name))
+                 ;; x.txt.gz is a compressed file, by its name. Do not let
+                 ;; libarchive guess: a one-line text file looks enough like an
+                 ;; mtree manifest that format detection takes it for one.
+                 (raw archive)
+                 (multiple-value-bind (selected unused) (make-selector patterns)
+                   (multiple-value-bind (roots raw filters) (survey archive passphrase strip selected)
+                     (cond ((and raw filters) (raw archive))
+                           (raw (fail "~A is not an archive" (display-name name)))
+                           (t
+                            (let ((missing (funcall unused)))
+                              (when missing
+                                (fail "~{~A~^, ~}: not in ~A" missing (display-name name))))
+                            (extract-into archive name destination roots passphrase overwrite
+                                          verbose strip selected)))))))))))))
 
-(defun extract-into (archive name destination roots passphrase overwrite verbose strip)
+(defun extract-into (archive name destination roots passphrase overwrite verbose strip
+                     &optional (selected (constantly t)))
   (let* ((target (if (> (length roots) 1)
                      (fresh-directory destination (if (stdio-p name) "archive" (archive-stem name)))
                      destination))
@@ -133,7 +168,9 @@ nothing is left. A trailing / stays."
               :flags (append (if overwrite '(:unlink) '()) *default-extract-flags*)
               :filter (lambda (e)
                         (setf current nil current-file nil)
-                        (let* ((stored (strip-components (entry-pathname e) strip))
+                        (let* ((original (entry-pathname e))
+                               (stored (and (funcall selected original)
+                                            (strip-components original strip)))
                                (link (and stored (entry-hardlink e)
                                           (strip-components (entry-hardlink e) strip)))
                                (path (and stored
@@ -144,7 +181,7 @@ nothing is left. A trailing / stays."
                             (setf (entry-pathname e) stored)
                             (when (entry-hardlink e)
                               (setf (entry-hardlink e) (or link ""))))
-                          (cond ((null stored) nil)  ; stripped away entirely
+                          (cond ((null stored) nil)  ; not chosen, or stripped away entirely
                                 ((and (not overwrite)
                                       (not (eq (entry-type e) :directory))
                                       (lexists-p path))
@@ -170,8 +207,10 @@ nothing is left. A trailing / stays."
    (clingon:make-command
     :name "extract"
     :aliases '("x")
-    :usage "[options] ARCHIVE"
-    :description "extract an archive (several top-level entries: into a new directory)"
+    :usage "[options] ARCHIVE [ENTRY...]"
+    :description "extract an archive (several top-level entries: into a new directory).
+With ENTRYs, only those: each is a name or a glob (* and ?), and a directory
+brings everything under it."
     :options (list (clingon:make-option :string :short-name #\C :long-name "directory"
                                                 :key :directory :parameter "DIR"
                                                 :description "extract under DIR instead of here")
