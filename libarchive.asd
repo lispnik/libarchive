@@ -18,7 +18,7 @@
 (asdf:defsystem #:libarchive/ffi
   :description "Complete raw CFFI bindings to libarchive."
   :license     "MIT"
-  :version     "0.3.0"
+  :version     "0.3.1"
   :depends-on  (#:cffi #:bordeaux-threads)
   :components ((:module "src"
                 :components ((:file "package")
@@ -36,7 +36,7 @@
 (asdf:defsystem #:libarchive
   :description "Common Lisp interface to libarchive: read, write and extract tar, zip, 7z, cpio, iso9660 and more."
   :license     "MIT"
-  :version     "0.3.0"
+  :version     "0.3.1"
   :depends-on  (#:libarchive/ffi #:bordeaux-threads #:trivial-garbage #:babel
                ;; SBCL normalizes Unicode itself; only macOS needs it (entry.lisp).
                (:feature (:and :darwin (:not :sbcl)) #:uax-15))
@@ -59,7 +59,7 @@
 (asdf:defsystem #:libarchive/tests
   :description "Test suite for libarchive."
   :license     "MIT"
-  :version     "0.3.0"
+  :version     "0.3.1"
   :depends-on  (#:libarchive #:fiveam #:trivial-gray-streams #:bordeaux-threads)
   :components ((:module "tests"
                 :serial t
@@ -85,7 +85,7 @@
 (asdf:defsystem #:libarchive/cli
   :description "la: extract, create, list and test archives of every kind libarchive knows."
   :license     "MIT"
-  :version     "0.3.0"
+  :version     "0.3.1"
   :depends-on  (#:libarchive #:clingon #:sb-posix)
   :components ((:module "cli"
                 :components ((:file "package")
@@ -115,7 +115,7 @@
 (asdf:defsystem #:libarchive/cli/tests
   :description "Tests for la, run in-process."
   :license     "MIT"
-  :version     "0.3.0"
+  :version     "0.3.1"
   :depends-on  (#:libarchive/cli #:fiveam)
   :components ((:module "cli-tests"
                 :serial t

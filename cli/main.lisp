@@ -2,7 +2,7 @@
 
 (in-package #:libarchive/cli)
 
-(defparameter *version* "0.3.0")
+(defparameter *version* "0.3.1")
 
 ;;; Each command file calls REGISTER-COMMAND with a function that makes its
 ;;; clingon command. The top-level command is built afresh on every RUN, so the
