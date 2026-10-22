@@ -54,15 +54,66 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
                     hit)))
             (lambda () (remove-if (lambda (p) (member p used :test #'string=)) patterns)))))
 
-(defun survey (archive passphrase strip &optional (selected (constantly t)))
+(defun match-options ()
+  "-x, --newer and --older, for the commands that read archives: see
+CALL-WITH-ENTRY-MATCH."
+  (list (clingon:make-option :list :short-name #\x :long-name "exclude" :key :exclude
+                                   :parameter "GLOB"
+                                   :description "leave out matching entries (repeatable)")
+        (newer-option) (older-option)))
+
+(defun newer-option ()
+  (clingon:make-option :string :long-name "newer" :key :newer :parameter "WHEN"
+                               :description "only what was modified after WHEN, a date or a file"))
+
+(defun older-option ()
+  (clingon:make-option :string :long-name "older" :key :older :parameter "WHEN"
+                               :description "only what was modified before WHEN, a date or a file"))
+
+(defun time-limit (cmd key)
+  "The --newer or --older value as MAKE-ARCHIVE-MATCH takes it: a file's own
+time if it names one, else a date for libarchive to read (\"2024-06-01\",
+\"2024-06-01 14:00\", \"3 days ago\")."
+  (let ((value (clingon:getopt cmd key)))
+    (when value
+      (let ((limit (if (lexists-p (user-file value)) (user-file value) value)))
+        ;; Tried alone, so that the error names the option.
+        (handler-case (close-archive (make-archive-match key limit))
+          (archive-error ()
+            (usage-error "--~(~A~): ~S is neither a date nor a file" key value)))
+        limit))))
+
+(defun call-with-entry-match (cmd function &key (exclude (clingon:getopt cmd :exclude)))
+  "Call FUNCTION with an ARCHIVE-MATCH made from -x, --newer and --older, or
+with NIL when none of them was given."
+  (let ((newer (time-limit cmd :newer))
+        (older (time-limit cmd :older)))
+    (if (or exclude newer older)
+        (with-archive-match (m :exclude exclude :newer newer :older older)
+          (funcall function m))
+        (funcall function nil))))
+
+(defun entry-chooser (selected match)
+  "A function of an entry: true if SELECTED (from MAKE-SELECTOR) is true of its
+name and MATCH, if any, chooses it."
+  (lambda (e)
+    (and (funcall selected (entry-pathname e))
+         (or (null match) (entry-matches-p match e)))))
+
+(defun survey (archive passphrase strip &optional (chosen (constantly t)))
   "The archive's top-level names, and whether it is a bare compressed file."
   (with-archive-reader (r archive :formats '(:all :raw) :passphrase (reader-passphrase passphrase))
-    (let ((roots '()))
+    (let ((roots '())
+          ;; A hash table, not PUSHNEW: an archive of a million top-level
+          ;; files is a few megabytes, and a list makes that quadratic.
+          (seen (make-hash-table :test #'equal)))
       (do-archive-entries (e r)
-        (let* ((name (and (funcall selected (entry-pathname e))
+        (let* ((name (and (funcall chosen e)
                           (strip-components (entry-pathname e) strip)))
                (root (and name (entry-root name))))
-          (when root (pushnew root roots :test #'string=))))
+          (when (and root (not (gethash root seen)))
+            (setf (gethash root seen) t)
+            (push root roots))))
       (values (nreverse roots)
               (equal (archive-format-name r) "raw")
               (archive-filter-names r)))))
@@ -92,9 +143,13 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
     (ensure-directories-exist out)
     (with-archive-reader (r archive :formats '(:raw) :passphrase (reader-passphrase passphrase))
       (next-entry r)
-      (with-open-file (s out :direction :output :element-type '(unsigned-byte 8)
-                             :if-exists :supersede)
-        (copy-entry-data r s)))
+      (handler-case
+          (with-open-file (s out :direction :output :element-type '(unsigned-byte 8)
+                                 :if-exists :supersede)
+            (copy-entry-data r s))
+        ((or stream-error file-error) (c)
+          (ignore-errors (delete-file out))
+          (fail "~A: cannot write: ~A" (relative-display out) (os-reason c)))))
     (note "~A: decompressed to ~A" (display-name name) (relative-display out))
     0))
 
@@ -124,18 +179,41 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
                  ;; mtree manifest that format detection takes it for one.
                  (raw archive)
                  (multiple-value-bind (selected unused) (make-selector patterns)
-                   (multiple-value-bind (roots raw filters) (survey archive passphrase strip selected)
-                     (cond ((and raw filters) (raw archive))
-                           (raw (fail "~A is not an archive" (display-name name)))
-                           (t
-                            (let ((missing (funcall unused)))
-                              (when missing
-                                (fail "~{~A~^, ~}: not in ~A" missing (display-name name))))
-                            (extract-into archive name destination roots passphrase overwrite
-                                          verbose strip selected)))))))))))))
+                   (call-with-entry-match
+                    cmd
+                    (lambda (match)
+                      (let ((chosen (entry-chooser selected match)))
+                        (multiple-value-bind (roots raw filters) (survey archive passphrase strip chosen)
+                          (cond ((and raw filters) (raw archive))
+                                (raw (fail "~A is not an archive" (display-name name)))
+                                (t
+                                 (let ((missing (funcall unused)))
+                                   (when missing
+                                     (fail "~{~A~^, ~}: not in ~A" missing (display-name name))))
+                                 (extract-into archive name destination roots passphrase overwrite
+                                               verbose strip chosen
+                                               (clingon:getopt cmd :same-permissions)))))))))))))))))
+
+(defun real-directory-p (path)
+  "True if PATH is a directory, and not a symlink to one."
+  (handler-case (sb-posix:s-isdir (sb-posix:stat-mode
+                                   (sb-posix:lstat (lstat-name path))))
+    (sb-posix:syscall-error () nil)))
+
+(defun extract-flags (overwrite same-permissions)
+  "libarchive's flags for la x. As tar does, modes are restored in full only for
+root or with --same-permissions; otherwise the umask applies, so that an
+archive cannot leave world-writable files behind. Owners are never restored,
+so neither are setuid and setgid bits (libarchive keeps them only with the
+owner)."
+  (append (if overwrite '(:unlink) '())
+          (if (or same-permissions (zerop (sb-posix:geteuid)))
+              '(:perm)
+              '())
+          (remove :perm *default-extract-flags*)))
 
 (defun extract-into (archive name destination roots passphrase overwrite verbose strip
-                     &optional (selected (constantly t)))
+                     &optional (chosen (constantly t)) same-permissions)
   (let* ((target (if (> (length roots) 1)
                      (fresh-directory destination (if (stdio-p name) "archive" (archive-stem name)))
                      destination))
@@ -143,11 +221,13 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
          (failed 0)
          (current nil)                  ; the entry being extracted, for messages
          (current-file nil)             ; ...and the file it creates, if it is new
+         (partial '())                  ; files to remove: failed, and new
          (extracted
+          (unwind-protect
            (handler-bind ((archive-error
                             (lambda (c)
                               (let ((restart (find-restart 'skip-entry c))
-                                    (message (or (archive-condition-message c) (princ-to-string c))))
+                                    (message (archive-message c)))
                                 (when restart
                                   (warn-user "~@[~A: ~]~A~:[~; (give it with -p or LA_PASSPHRASE)~]"
                                              ;; Refusals already name the entry.
@@ -157,19 +237,21 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
                                                   (null (passphrase-source-given passphrase))))
                                   (incf failed)
                                   ;; Do not leave behind an empty or partial file
-                                  ;; that was not there before.
+                                  ;; that was not there before. Removed once
+                                  ;; extraction is over: until libarchive is
+                                  ;; closed, it may still set the file's times.
                                   (when current-file
-                                    (ignore-errors (delete-file current-file))
+                                    (push current-file partial)
                                     (setf current-file nil))
                                   (invoke-restart restart))))))
              (extract-archive
               archive target
               :passphrase (reader-passphrase passphrase)
-              :flags (append (if overwrite '(:unlink) '()) *default-extract-flags*)
+              :flags (extract-flags overwrite same-permissions)
               :filter (lambda (e)
                         (setf current nil current-file nil)
                         (let* ((original (entry-pathname e))
-                               (stored (and (funcall selected original)
+                               (stored (and (funcall chosen e)
                                             (strip-components original strip)))
                                (link (and stored (entry-hardlink e)
                                           (strip-components (entry-hardlink e) strip)))
@@ -183,8 +265,12 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
                               (setf (entry-hardlink e) (or link ""))))
                           (cond ((null stored) nil)  ; not chosen, or stripped away entirely
                                 ((and (not overwrite)
-                                      (not (eq (entry-type e) :directory))
-                                      (lexists-p path))
+                                      (lexists-p path)
+                                      ;; A directory merges with one already
+                                      ;; there, but replaces nothing else (a
+                                      ;; symlink, say) unless asked to.
+                                      (not (and (eq (entry-type e) :directory)
+                                                (real-directory-p path))))
                                  (warn-user "~A: already exists, not overwritten (use --overwrite)"
                                             (entry-pathname e))
                                  (incf skipped)
@@ -193,8 +279,10 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
                                  (setf current (entry-pathname e))
                                  (when (and (eq (entry-type e) :regular) (not (lexists-p path)))
                                    (setf current-file path))
-                                 (when verbose (format t "~A~%" current))
-                                 t))))))))
+                                 (when verbose (say "~A" current))
+                                 t))))))
+            (dolist (file partial)
+              (ignore-errors (delete-file file))))))
     (note "~A: ~D entr~:@P extracted~@[ into ~A~]~@[, ~D skipped~]~@[, ~D failed~]"
           (display-name name) (length extracted)
           (and (> (length roots) 1) (relative-display target))
@@ -209,8 +297,8 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
     :aliases '("x")
     :usage "[options] ARCHIVE [ENTRY...]"
     :description "extract an archive"
-    :long-description "An archive with several top-level entries is extracted into a new directory named after it. With ENTRYs, only those: each is a name or a glob (* and ?), and a directory brings everything under it."
-    :options (list (clingon:make-option :string :short-name #\C :long-name "directory"
+    :long-description "An archive with several top-level entries is extracted into a new directory named after it. With ENTRYs, only those: each is a name or a glob (* and ?), and a directory brings everything under it. -x leaves out what matches, at any depth (-x '*.o', -x build); --newer and --older choose by modification time."
+    :options (list* (clingon:make-option :string :short-name #\C :long-name "directory"
                                                 :key :directory :parameter "DIR"
                                                 :description "extract under DIR instead of here")
                    (clingon:make-option :string :short-name #\p :long-name "passphrase"
@@ -221,8 +309,11 @@ selects it. Each use is noted, so UNUSED-PATTERNS can say which never matched."
                                                  :description "drop the first N directories of every name")
                    (clingon:make-option :flag :long-name "overwrite" :key :overwrite
                                               :description "replace files that already exist")
+                   (clingon:make-option :flag :long-name "same-permissions" :key :same-permissions
+                                              :description "modes exactly as archived, not less the umask (root: always)")
                    (clingon:make-option :flag :short-name #\v :long-name "verbose" :key :verbose
                                               :description "print each name as it is extracted")
                    (clingon:make-option :flag :short-name #\q :long-name "quiet" :key :quiet
-                                              :description "no summary line"))
+                                              :description "no summary line")
+                   (match-options))
     :handler #'extract/handler)))

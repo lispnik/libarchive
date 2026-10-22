@@ -19,7 +19,7 @@
   :description "Complete raw CFFI bindings to libarchive."
   :license     "MIT"
   :version     "0.3.1"
-  :depends-on  (#:cffi #:bordeaux-threads)
+  :depends-on  (#:cffi #:babel #:bordeaux-threads)
   :components ((:module "src"
                 :components ((:file "package")
                              (:file "library"     :depends-on ("package"))
@@ -52,7 +52,8 @@
                              (:file "options"   :depends-on ("handle"))
                              (:file "reader"    :depends-on ("callbacks" "entry" "options"))
                              (:file "writer"    :depends-on ("callbacks" "entry" "options"))
-                             (:file "disk"      :depends-on ("reader" "writer"))
+                             (:file "match"     :depends-on ("reader"))
+                             (:file "disk"      :depends-on ("reader" "writer" "match"))
                              (:file "with"      :depends-on ("reader" "writer" "disk")))))
   :in-order-to ((asdf:test-op (asdf:test-op #:libarchive/tests))))
 
@@ -72,6 +73,8 @@
                              (:file "callback-tests")
                              (:file "encryption-tests")
                              (:file "disk-tests")
+                             (:file "match-tests")
+                             (:file "fuzz-tests")
                              (:file "error-tests")
                              ;; Last: asserts on what the suites above left behind.
                              (:file "hygiene-tests"))))
@@ -100,6 +103,7 @@
                              (:file "list"    :depends-on ("main" "extract"))
                              (:file "diff"    :depends-on ("main" "extract"))
                              (:file "remove"  :depends-on ("main" "add"))
+                             (:file "convert" :depends-on ("main" "add"))
                              (:file "docs"    :depends-on ("main")))))
   :build-operation "program-op"
   :build-pathname  "bin/la"

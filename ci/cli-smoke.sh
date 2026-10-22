@@ -57,6 +57,12 @@ check "cat to stdout"       sh -c "test \"\$('$LA' cat p.tar.zst proj/README)\" 
 check "rm removes"           sh -c "'$LA' rm -q p.tar.zst out && test \$('$LA' l p.tar.zst | wc -l) -eq 5"
 check "-T threads"           sh -c "'$LA' a -q -T 0 threads.tar.zst proj && '$LA' t -q threads.tar.zst"
 
+# Converting, and choosing by time.
+check "convert"              sh -c "'$LA' convert -q p.tar.zst p.zip && test \$('$LA' l p.zip | wc -l) -eq 5"
+check "convert to stdout"    sh -c "'$LA' convert -q -F tar -z xz p.zip - > conv.txz && '$LA' t -q conv.txz"
+check "convert in place"     sh -c "'$LA' convert -q -f -l 19 p.tar.zst p.tar.zst && '$LA' t -q p.tar.zst"
+check "--newer a future date" sh -c "test -z \"\$('$LA' l --newer '2999-01-01' p.zip)\""
+
 # Bare compression both ways.
 check "a .gz of one file"  "$LA" a -q loose.txt.gz loose.txt
 check "x .gz decompresses" "$LA" x -q loose.txt.gz -C gz
@@ -70,6 +76,16 @@ check "  extracted"        test -f fromstdin/proj/README
 check "stdout needs -F"    sh -c "'$LA' a - proj > /dev/null; test \$? -eq 2"
 
 # Errors exit 1 and leave nothing behind.
+# A bomb that outgrows what may be written (here a 1 MB file-size limit, as a
+# full disk would) fails, says why, and leaves no partial file.
+head -c 8000000 /dev/zero > zeros.bin
+check "a 8 MB of zeros"     "$LA" a -q bomb.tar.gz zeros.bin
+check "  bare too"          "$LA" a -q zeros.bin.gz zeros.bin
+rm zeros.bin
+check "x past the limit fails" sh -c "(trap '' XFSZ; ulimit -f 2048; '$LA' x -q bomb.tar.gz -C fz 2>err); test \$? -eq 1 && grep -q 'File too large' err"
+check "  and leaves nothing"  sh -c "test -z \"\$(ls -A fz 2>/dev/null)\""
+check "bare x past the limit" sh -c "(trap '' XFSZ; ulimit -f 2048; '$LA' x -q zeros.bin.gz -C fzb 2>/dev/null); test \$? -eq 1 && test ! -e fzb/zeros.bin"
+check "a zeros .gz is one file" sh -c "'$LA' t -q zeros.bin.gz && test \$('$LA' l zeros.bin.gz | wc -l) -eq 1"
 check "missing archive"    sh -c "'$LA' x nonesuch.zip; test \$? -eq 1"
 check "refuses to clobber" sh -c "'$LA' a p.tar.zst loose.txt; test \$? -eq 1"
 check "failed a leaves no file" sh -c "'$LA' a broken.tar proj nonesuch; test \$? -eq 1 && test ! -e broken.tar"
@@ -78,6 +94,9 @@ check "failed a leaves no file" sh -c "'$LA' a broken.tar proj nonesuch; test \$
 if has tar && has gzip; then
     check "system tar reads la's .tar.gz" sh -c "'$LA' a -q sys.tar.gz proj && tar -tzf sys.tar.gz | grep -q proj/src/main.c"
     check "la reads system tar's .tar.gz" sh -c "tar -czf fromtar.tar.gz proj && '$LA' x -q fromtar.tar.gz -C t && test -f t/proj/README"
+fi
+if has python3; then
+    check "l --json is JSON"  sh -c "'$LA' l --json p.zip | python3 -c 'import json,sys; assert len(json.load(sys.stdin)) == 5'"
 fi
 if has unzip; then
     check "unzip reads la's zip"  sh -c "'$LA' a -q sys.zip proj && unzip -tq sys.zip"

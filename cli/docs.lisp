@@ -106,6 +106,9 @@ la a site.tar.zst site/ README.md
 la a -r site.tar.zst site/index.html
 la x download.tar.gz
 la x src.tar.gz 'src/*.c'
+la x -x '*.o' --newer 2025-01-01 build.tar.gz
+la convert photos.zip photos.tar.zst
+la l --json release.7z
 la rm site.tar.zst site/drafts
 la cat logs.zip app.log | less
 la diff backup.tar.gz -C ~/project

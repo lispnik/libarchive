@@ -16,6 +16,7 @@ Dependencies are vendored under `ocicl/` (restore with `ocicl install`).
 
 ```sh
 make test       # FiveAM suite; exits non-zero on failure (LISP=ecl or ccl: on those)
+make fuzz       # test, with 5000 mutated archives per format (FUZZ=N)
 make check      # test, then load and print version + export count
 make examples   # every examples/*.lisp in its own image; they ASSERT their output
 make la         # bin/la, the libarchive/cli system dumped with program-op
@@ -27,7 +28,11 @@ make clean
 To run one test from a REPL:
 `(fiveam:run! 'libarchive/tests::extract-refuses-escaping-names)`. Suites:
 `libarchive-symbols`, `-entries`, `-roundtrip`, `-streams`, `-callbacks`, `-encryption`,
-`-disk`, `-errors`, `-hygiene` (last; it asserts that the client-data registry is empty).
+`-disk`, `-match`, `-fuzz`, `-errors`, `-hygiene` (last; it asserts that the client-data
+registry is empty). `-fuzz` mutates small archives of every format with its own
+seeded PRNG and reads each to the end, from memory and through an unseekable stream:
+anything but an `archive-condition` fails, naming the seed.
+`LIBARCHIVE_FUZZ_ITERATIONS` sets the count per format (default 40).
 
 CI (`.github/workflows/ci.yml`) has three jobs, all on every push to main and on
 `workflow_dispatch` (other branches only run when dispatched: `gh workflow run ci.yml
@@ -44,15 +49,18 @@ CI (`.github/workflows/ci.yml`) has three jobs, all on every push to main and on
   builds in an `ubuntu:20.04` container. SBCL is built from source on every
   platform (`ci/build-sbcl.sh`, with core compression and libarchive's static zstd),
   because the dumped binary carries SBCL's runtime and so its glibc or macOS floor
-  (macOS 11). The result is checked on glibc 2.28 (AlmaLinux 8). `.release/` caches
+  (macOS 11). The result is checked on glibc 2.28 (AlmaLinux 8). On Linux,
+  `ci/linux-packages.sh` then makes a `.deb` and an `.rpm` with nfpm (pinned, checked
+  by SHA-256), installed and smoke-tested on the runner and on AlmaLinux 8.
+  `.release/` caches
   the built toolchain, and `.release/fasl` keeps its fasls apart from any other
   SBCL's (same version, different features: they will not load).
 
 `ocicl/` is gitignored, and `ocicl.csv` pins it.
 
 **Releasing:** bump `*version*` in `cli/main.lisp` and every `:version` in the `.asd`,
-then push a `v*` tag. The `release` job publishes the four `la-<os>-<arch>.tar.gz` and
-`SHA256SUMS`, then regenerates `Formula/la.rb` in github.com/lispnik/homebrew-tap with
+then push a `v*` tag. The `release` job publishes the four `la-<os>-<arch>.tar.gz`,
+the `.deb`s and `.rpm`s and `SHA256SUMS`, then regenerates `Formula/la.rb` in github.com/lispnik/homebrew-tap with
 `ci/tap-formula.sh` and pushes it, using the `TAP_DEPLOY_KEY` secret (a deploy key with
 write access to the tap only).
 The ocicl request is ocicl/request-system-additions-here#78.
@@ -63,7 +71,7 @@ ignoring inherited configuration. Copy it at a REPL rather than relying on `~/.s
 ## Architecture
 
 ```
-libarchive/ffi    cffi + bordeaux-threads                     generated raw layer
+libarchive/ffi    cffi + babel + bordeaux-threads             generated raw layer
 libarchive        ffi + trivial-garbage + babel (+ uax-15 off SBCL on macOS)
 libarchive/tests  libarchive + fiveam + trivial-gray-streams
 libarchive/cli    libarchive + clingon + sb-posix                the la binary (cli/)
@@ -102,6 +110,13 @@ Laid out like ud18's CLI: each command file registers a maker with
   file beside the archive, and renames it over the original.
 - **`la x ENTRY...`** filters through `make-selector`; patterns match original names,
   before `--strip-components`.
+- **`-x`, `--newer`, `--older`** (x, l, cat, convert; a has the time ones) are an
+  `archive-match` made by `call-with-entry-match`; `entry-chooser` combines it with the
+  ENTRY selector. `la a -x` is its own `path-matches-p` on the stored names.
+- **`la convert`** is `transfer-entry` from one reader to one writer, written beside
+  OUT and renamed (`call-with-replacement`, shared with `rewrite-archive`), so OUT may
+  be IN. A bare compressed input is spooled to a file to learn its size, unless the
+  output is raw too.
 
 `cli/formats.lisp` holds the single extension table, used for writing and for
 `archive-stem`.
@@ -114,9 +129,16 @@ Laid out like ud18's CLI: each command file registers a maker with
 - **Generated files**: `src/ffi-archive.lisp`, `src/ffi-entry.lisp`,
   `src/ffi-names.lisp`, `src/constants.lisp`. Don't hand-edit them. Change
   `tools/gen-ffi.py` and run `make generate`. The generator maps `const char *` to
-  `:string` both ways, other pointers to `:pointer`, and renames `archive_*_open_FILE`
+  `:string` as an argument and `c-string` as a result, other pointers to `:pointer`, and renames `archive_*_open_FILE`
   to `%archive-*-open-stdio`, because they would otherwise fold onto `open_file`. It drops
   `_WIN32`-only declarations.
+- **Returned strings** are `c-string` (`src/types.lisp`): UTF-8, else Latin-1. A
+  strict `:string` signalled a babel error on non-UTF-8 names and error messages (the
+  fuzzer found it); arguments are still `:string`.
+- **`archive-match`** (`src/match.lisp`) is a handle like the readers. libarchive's
+  own `archive_read_disk_set_matching` does not descend into a directory it excludes
+  by *time*, so `archive-directory` matches in its own loop instead: only a path
+  exclusion (`path-excluded-p`) prunes.
 - `mode_t`/`dev_t` are per-platform `defctype`s in `src/types.lisp`. They aren't
   groveled, so no C compiler is needed.
 - Nothing calls into C at load time. `load-libraries` is lazy and is invoked by every
@@ -166,6 +188,22 @@ that `free-entry` cancels.
   `module:!opt`, not `!module:opt`.
 - `archive_filter_name(0)` is the filter nearest the format (innermost), not the
   outermost. Tar hard links read back with file type 0, so `entry-type` is NIL.
+- `archive_read_extract2` turns every failed `archive_write_header` into
+  `ARCHIVE_WARN` (and then skips the data), so a refusal ("Cannot extract through
+  symlink") looked like a warning and the entry was counted as extracted.
+  `extract-entry` (disk.lisp) does its work instead, with the real codes: a failed
+  header is an `archive-error` with `skip-entry`. Entries naming the target itself
+  (`./`) are skipped, or they would chmod it.
+- A failed disk write (`ENOSPC`) is also only `ARCHIVE_WARN` from
+  `archive_write_data_block`; `extract-entry` makes it an error. After a failed
+  entry, closing the disk writer still sets that file's times, so `la x` removes
+  partial files only after `extract-archive` returns. `ci/cli-smoke.sh` checks this
+  with `ulimit -f` (and SIGXFSZ ignored), since a full disk can't be made portably.
+- `la x` leaves `:perm` out (umask applies) unless root or `--same-permissions`,
+  never restores owners, and won't replace an existing non-directory with a
+  directory entry. `lexists-p` lstats without a trailing `/`, which would follow a
+  symlink at the end. Everything la prints goes through `printable`/`say` (control
+  characters escaped, as GNU tar), since names come from archives.
 - `extract-archive` prefixes the target directory onto entry names (its truename, because
   macOS `/tmp` is a symlink and `SECURE_SYMLINKS` would refuse it). So the names libarchive
   sees are absolute, and `SECURE_NOABSOLUTEPATHS` can't be used. `check-extract-name`

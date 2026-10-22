@@ -30,7 +30,6 @@
    (write-function      :initform nil :accessor handle-write-function)
    (passphrase-function :initform nil :accessor handle-passphrase-function)
    (passphrase-buffer   :initform nil :accessor handle-passphrase-buffer)
-   (progress-function   :initform nil :accessor handle-progress-function)
    (filter-function     :initform nil :accessor handle-filter-function)))
 
 (defclass archive-reader (archive-handle)

@@ -36,7 +36,7 @@
                                    :passphrase passphrase)
                              :keep (lambda (name)
                                      (let ((drop (some (lambda (p) (selects-p p name)) patterns)))
-                                       (when (and drop verbose) (format t "~A~%" name))
+                                       (when (and drop verbose) (say "~A" name))
                                        (not drop))))
           (note "~A: ~D entr~:@P removed, ~D kept, ~A" archive-name removed kept
                 (human-size (file-size (user-file archive-name))))

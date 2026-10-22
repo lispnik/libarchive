@@ -18,14 +18,62 @@
 
 (defvar *quiet* nil "Suppress the summary lines on standard error.")
 
+;;; Everything la prints goes through PRINTABLE. Names come from archives, and
+;;; an archive can hold a name with a newline in it (a fake line of output) or
+;;; a terminal escape sequence (which retitles the window, or worse, when it
+;;; reaches a terminal). As GNU tar does, control characters and backslashes
+;;; are written as C escapes; --json escapes them its own way.
+
+(defun unprintable-p (char)
+  (let ((code (char-code char)))
+    (or (< code 32) (<= 127 code 159) (char= char #\\))))
+
+(defun printable (string)
+  "STRING with control characters and backslashes escaped: \\n, \\t, \\\\, \\033."
+  (if (notany #'unprintable-p string)
+      string
+      (with-output-to-string (out)
+        (loop for c across string
+              do (case c
+                   (#\\ (write-string "\\\\" out))
+                   (#\Newline (write-string "\\n" out))
+                   (#\Tab (write-string "\\t" out))
+                   (#\Return (write-string "\\r" out))
+                   (t (if (unprintable-p c)
+                          (format out "\\~3,'0O" (char-code c))
+                          (write-char c out))))))))
+
+(defun os-reason (condition)
+  "The last line of an SBCL stream or file error: the system's reason, such as
+\"No space left on device\"."
+  (let ((text (string-trim '(#\Space #\Newline) (princ-to-string condition))))
+    (string-trim " " (subseq text (1+ (or (position #\Newline text :from-end t) -1))))))
+
+(defparameter *errnos-worth-naming*
+  (list sb-posix:enospc sb-posix:edquot sb-posix:eio sb-posix:eacces sb-posix:erofs
+        sb-posix:efbig sb-posix:enametoolong)
+  "errnos whose description says more than libarchive's message (\"Write failed\").")
+
+(defun archive-message (condition)
+  "An ARCHIVE-CONDITION's message, with the system's reason when it adds one."
+  (let ((message (or (archive-condition-message condition) (princ-to-string condition)))
+        (errno (archive-condition-errno condition)))
+    (if (and errno (member errno *errnos-worth-naming*))
+        (format nil "~A (~A)" message (sb-int:strerror errno))
+        message)))
+
+(defun say (control &rest args)
+  "A line on standard output, made printable."
+  (write-line (printable (format nil "~?" control args))))
+
 (defun warn-user (control &rest args)
   "A diagnostic on standard error that does not stop the command."
-  (format *error-output* "~&la: ~?~%" control args))
+  (format *error-output* "~&la: ~A~%" (printable (format nil "~?" control args))))
 
 (defun note (control &rest args)
   "A summary line on standard error, unless --quiet."
   (unless *quiet*
-    (format *error-output* "~&~?~%" control args)))
+    (format *error-output* "~&~A~%" (printable (format nil "~?" control args)))))
 
 ;;; Paths. Every path the user gives is merged with *DEFAULT-PATHNAME-DEFAULTS*
 ;;; and the process never changes directory, so the tests can bind it.
@@ -38,9 +86,15 @@
 
 (defun stdio-p (name) (string= name "-"))
 
+(defun lstat-name (path)
+  "PATH as lstat should see it: without a trailing /, which would make it look
+through a symlink at the end."
+  (let ((name (uiop:native-namestring path)))
+    (if (> (length name) 1) (string-right-trim "/" name) name)))
+
 (defun lexists-p (path)
   "True if PATH exists, as a dangling symlink too."
-  (handler-case (progn (sb-posix:lstat (uiop:native-namestring path)) t)
+  (handler-case (progn (sb-posix:lstat (lstat-name path)) t)
     (sb-posix:syscall-error () nil)))
 
 (defun symlink-p (path)
@@ -101,12 +155,12 @@ given. The tests turn it off; without a terminal there is nobody to ask anyway."
   (%make-passphrase-source :given (passphrase-from cmd) :label label))
 
 (defun terminal-available-p ()
-  (ignore-errors (with-open-file (tty "/dev/tty") (declare (ignore tty)) t)))
+  (ignore-errors (with-open-file (tty "/dev/tty") (declare (ignorable tty)) t)))
 
 (defun read-passphrase-from-terminal (label)
   "Ask on /dev/tty, without echo. NIL if the answer is empty."
   (with-open-file (tty "/dev/tty" :direction :io :if-exists :append)
-    (format tty "Passphrase for ~A: " label)
+    (format tty "Passphrase for ~A: " (printable label))
     (finish-output tty)
     (flet ((stty (arg) (ignore-errors (uiop:run-program (list "stty" arg) :input #p"/dev/tty"))))
       (stty "-echo")

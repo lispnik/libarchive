@@ -75,7 +75,7 @@
           (directories (make-hash-table :test #'equal)))
       (flet ((differ (control &rest args)
                (incf differences)
-               (unless *quiet* (format t "~?~%" control args))))
+               (unless *quiet* (apply #'say control args))))
         (call-with-input-archive
          name
          (lambda (archive)

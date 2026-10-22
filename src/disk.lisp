@@ -36,24 +36,69 @@ cannot be used; this check is done on the names as they are in the archive."
           ((member ".." (uiop:split-string name :separator "/") :test #'string=)
            (refuse "contains a .. component")))))
 
+(defun names-target-itself-p (name)
+  "True for \".\", \"./\", \"././\" and the like: the directory being extracted into."
+  (every (lambda (part) (member part '("" ".") :test #'string=))
+         (uiop:split-string name :separator "/")))
+
+(defun extract-entry (reader disk entry progress)
+  "Write ENTRY, READER's current one, to the disk writer DISK, data and all.
+
+This is archive_read_extract2, but with libarchive's own result codes: that
+function reports every entry it could not create (one refused by the symlink
+checks, say) as a mere ARCHIVE_WARN, after which the entry is easily taken for
+extracted. Here a header that fails is an ARCHIVE-ERROR, and so is a data write
+that fails, which libarchive also calls a warning."
+  (let ((d (live-pointer disk)))
+    (handler-case
+        (progn
+          (check-result disk (%archive-write-header d (entry-pointer entry)) "archive_write_header")
+          (when (or (not (entry-size-set-p entry)) (plusp (entry-size entry)))
+            (cffi:with-foreign-objects ((buffer :pointer) (size :size) (offset :int64))
+              (loop for code = (checked reader (%archive-read-data-block buffer size offset))
+                    until (= code +archive-eof+)
+                    do (let ((written (%archive-write-data-block
+                                       d (cffi:mem-ref buffer :pointer)
+                                       (cffi:mem-ref size :size) (cffi:mem-ref offset :int64))))
+                         ;; A failed write (a full disk) is only ARCHIVE_WARN
+                         ;; to libarchive, but the file is not what the
+                         ;; archive holds: it is an error.
+                         (when (minusp written)
+                           (check-result disk (min written +archive-failed+)
+                                         "archive_write_data_block")))
+                       (when progress
+                         (funcall progress (%archive-filter-bytes (live-pointer reader) -1)))))))
+      (error (c)
+        ;; Finish the entry before anyone hears of the failure, so that the
+        ;; disk writer is ready for the next one and does not later try to
+        ;; set the times of a file the handler may have removed.
+        (%archive-write-finish-entry d)
+        (error c)))
+    (check-result disk (%archive-write-finish-entry d) "archive_write_finish_entry")))
+
 (defun extract-archive (source directory &key (flags *default-extract-flags*)
                                              (formats :all) (filters :all)
-                                             passphrase options filter progress)
+                                             passphrase options filter match progress)
   "Extract the archive SOURCE (anything OPEN-ARCHIVE-READER accepts, or an open
 ARCHIVE-READER) into DIRECTORY, creating it if need be. Returns the list of
 entry names extracted.
 
 FLAGS is a list of keywords from *EXTRACT-FLAGS* (:owner :perm :time :acl
 :xattr :fflags :no-overwrite :unlink :secure-symlinks :secure-nodotdot ...).
-Entries with absolute names or .. components are always refused.
+Entries with absolute names or .. components are always refused. An entry for
+the target directory itself (\"./\", as `tar cf x.tar .' makes) is skipped,
+so that an archive cannot change DIRECTORY's permissions, owner or times.
 
-FILTER, if given, is called with each entry and extracts it only if it returns
-true. It may also change the entry's pathname (and hardlink) to extract it
+MATCH, an ARCHIVE-MATCH, chooses entries by their names (as stored), times and
+owners. FILTER, if given, is then called with each entry and extracts it only
+if it returns true. It may also change the entry's pathname (and hardlink) to extract it
 under another name; the safety checks apply to the new names. PROGRESS, if
-given, is called periodically during extraction with the number of
-(compressed) bytes consumed so far.
+given, is called as data is written with the number of (compressed) bytes
+consumed so far.
 
-Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart."
+Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart:
+those that would escape DIRECTORY, those libarchive refuses (a path through a
+symlink, with :secure-symlinks), and those that cannot be written."
   (let ((root (uiop:native-namestring
                (truename (ensure-directories-exist (uiop:ensure-directory-pathname directory)))))
         (extracted '()))
@@ -61,41 +106,30 @@ Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart.
              (let ((disk (make-disk-writer flags)))
                (unwind-protect
                     (progn
-                      (when progress
-                        (setf (handle-progress-function reader)
-                              (lambda ()
-                                (funcall progress (%archive-filter-bytes (live-pointer reader) -1))))
-                        (%archive-read-extract-set-progress-callback
-                         (live-pointer reader) (cffi:callback progress-callback) (handle-key reader)))
                       (loop for e = (next-entry reader)
                             while e
                             do (restart-case
                                    ;; The filter may rename the entry (strip a leading
                                    ;; directory, say), so its names are read after it.
-                                   (when (or (null filter) (funcall filter e))
+                                   (when (and (or (null match) (entry-matches-p match e))
+                                              (or (null filter) (funcall filter e)))
                                      (let ((name (entry-pathname e))
                                            (link (entry-hardlink e)))
                                        (check-extract-name name)
                                        (when link (check-extract-name link))
-                                       (setf (entry-pathname e) (concatenate 'string root name))
-                                       (when link
-                                         (setf (entry-hardlink e) (concatenate 'string root link)))
-                                       (check-result reader
-                                                     (%archive-read-extract2 (live-pointer reader)
-                                                                             (entry-pointer e)
-                                                                             (live-pointer disk))
-                                                     "archive_read_extract2")
-                                       (push name extracted)))
+                                       (unless (names-target-itself-p name)
+                                         (setf (entry-pathname e) (concatenate 'string root name))
+                                         (when link
+                                           (setf (entry-hardlink e) (concatenate 'string root link)))
+                                         (extract-entry reader disk e progress)
+                                         (push name extracted))))
                                  (skip-entry ()
                                    :report "Skip this entry and go on to the next."
                                    nil)))
                       ;; Closing the disk writer is what applies deferred
                       ;; directory permissions and times, so its errors count.
                       (close-archive disk))
-                 (close-archive disk :abort t)
-                 (when progress
-                   (%archive-read-extract-set-progress-callback
-                    (live-pointer reader) (cffi:null-pointer) (cffi:null-pointer)))))))
+                 (close-archive disk :abort t)))))
       (if (typep source 'archive-reader)
           (run source)
           (let ((reader (open-archive-reader source :formats formats :filters filters
@@ -105,7 +139,7 @@ Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart.
     (nreverse extracted)))
 
 (defun archive-directory (directory target &rest writer-keys
-                          &key filter (read-disk-flags '()) name (directories t)
+                          &key filter match report (read-disk-flags '()) name (directories t)
                           &allow-other-keys)
   "Archive the contents of DIRECTORY into TARGET, with entry names relative to
 DIRECTORY. TARGET is an open ARCHIVE-WRITER (left open), or anything
@@ -121,7 +155,11 @@ as NAME (by default its file name).
 FILTER, if given, is called with each entry found on disk (its pathname is
 absolute here) and the entry -- and, for a directory, everything below it -- is
 skipped unless it returns true. READ-DISK-FLAGS are keywords from
-*READ-DISK-FLAGS*, e.g. :no-xattr. Hard links are archived as separate copies.
+*READ-DISK-FLAGS*, e.g. :no-xattr. MATCH, an ARCHIVE-MATCH, sees the paths as they
+are on disk (absolute). A directory it leaves out by name is not descended
+into; one left out by its time or owner is, and its contents are matched in
+turn. REPORT, if given, is called with the name of each entry as it is stored,
+after it is written. Hard links are archived as separate copies.
 DIRECTORIES NIL leaves directory entries out (their contents still go in), for
 formats such as warc and ar that cannot store a directory."
   (let* ((directory-p (uiop:directory-exists-p directory))
@@ -162,9 +200,17 @@ formats such as warc and ar that cannot store a directory."
                         (checked disk (%archive-read-disk-open root))
                         (loop for e = (next-entry disk)
                               while e
-                              do (unless (zerop (%archive-read-disk-can-descend (live-pointer disk)))
-                                   (checked disk (%archive-read-disk-descend)))
-                                 (let ((stored (archive-name (entry-pathname e))))
+                              do (let ((pruned (and match (path-excluded-p match e))))
+                                   ;; A directory left out by name takes its
+                                   ;; contents with it; one left out by time
+                                   ;; or owner does not.
+                                   (unless (or pruned
+                                               (zerop (%archive-read-disk-can-descend
+                                                       (live-pointer disk))))
+                                     (checked disk (%archive-read-disk-descend)))
+                                 (let ((stored (and (not pruned)
+                                                    (or (null match) (entry-matches-p match e))
+                                                    (archive-name (entry-pathname e)))))
                                    (when (and stored
                                               (or directories (not (eq (entry-type e) :directory))))
                                      (setf (entry-pathname e) stored)
@@ -174,13 +220,15 @@ formats such as warc and ar that cannot store a directory."
                                              until (zerop n)
                                              do (write-data writer buffer :end n)))
                                      (checked writer (%archive-write-finish-entry))
-                                     (incf count)))))
+                                     (when report (funcall report stored))
+                                     (incf count))))))
                    (close-archive disk)))))
       (if (typep target 'archive-writer)
           (walk target)
           (let ((writer (apply #'open-archive-writer target
                                (loop for (k v) on writer-keys by #'cddr
-                                     unless (member k '(:filter :read-disk-flags :name :directories))
+                                     unless (member k '(:filter :match :report :read-disk-flags :name
+                                                         :directories))
                                        append (list k v))))
                 (ok nil))
             (unwind-protect (progn (walk writer) (setf ok t))

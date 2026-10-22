@@ -234,26 +234,38 @@ jobs:
           brew uninstall --ignore-dependencies libarchive 2>/dev/null || true
           ci/release-build.sh macos ${{ matrix.arch }}
 
-      # And on the runner itself, a current distribution, and on the oldest
-      # glibc it is meant for: 2.28, AlmaLinux 8 (as RHEL 8).
+      - name: Make the .deb and .rpm (Linux)
+        if: runner.os == 'Linux'
+        run: ci/linux-packages.sh ${{ matrix.arch }}
+
+      # And on the runner itself, a current distribution, installed from the
+      # .deb; and on the oldest glibc it is meant for, 2.28, AlmaLinux 8 (as
+      # RHEL 8), installed from the .rpm.
       - name: Check on the runner and on glibc 2.28 (Linux)
         if: runner.os == 'Linux'
         run: |
           bin/la --version
           ci/cli-smoke.sh bin/la
+          sudo dpkg -i la_*.deb
+          /usr/bin/la --version && test -f /usr/share/man/man1/la.1.gz && ci/cli-smoke.sh /usr/bin/la
+          sudo dpkg -r la
           # dnf's mirrors stall now and then: bounded, and retried.
           docker run --rm -v "$PWD:/w" -w /w almalinux:8 sh -c '
             for i in 1 2 3; do
               timeout 300 dnf -q -y --setopt=timeout=30 install tar gzip zip unzip diffutils >/dev/null && break
               echo "dnf attempt $i failed"; sleep 10
             done
-            ldd --version | head -1 && bin/la --version && ci/cli-smoke.sh bin/la'
+            ldd --version | head -1 && bin/la --version && ci/cli-smoke.sh bin/la &&
+            rpm -i la-*.rpm && rpm -V la && /usr/bin/la --version && ci/cli-smoke.sh /usr/bin/la'
 
       - name: Upload la
         uses: actions/upload-artifact@v7
         with:
           name: la-${{ matrix.os }}-${{ matrix.arch }}
-          path: la-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          path: |
+            la-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+            la_*.deb
+            la-*.rpm
           if-no-files-found: error
 
   # A v* tag publishes the four binaries, once everything has passed.
@@ -278,7 +290,7 @@ jobs:
         run: |
           set -eux
           ls -l dist
-          (cd dist && sha256sum la-*.tar.gz > SHA256SUMS)
+          (cd dist && sha256sum la-*.tar.gz la_*.deb la-*.rpm > SHA256SUMS)
           cat > notes.md <<'NOTES'
           `la` extracts, creates, lists and tests archives in every format libarchive
           handles. Each tarball holds the `la` binary (an SBCL image with libarchive
@@ -291,6 +303,8 @@ jobs:
           | `la-macos-x86_64.tar.gz` | macOS 11 or later, Intel |
           | `la-linux-x86_64.tar.gz` | Linux with glibc 2.28 or later (RHEL 8, Debian 10, Ubuntu 20.04 and newer) |
           | `la-linux-aarch64.tar.gz` | the same, on arm64 |
+          | `la_*_amd64.deb`, `la_*_arm64.deb` | Debian, Ubuntu and the like (`sudo apt install ./la_*.deb`) |
+          | `la-*.x86_64.rpm`, `la-*.aarch64.rpm` | RHEL, Fedora, SUSE and the like (`sudo dnf install ./la-*.rpm`) |
 
           ```sh
           brew install lispnik/tap/la
@@ -306,7 +320,7 @@ jobs:
           `xattr -d com.apple.quarantine la`. `LA_LIBARCHIVE=system` makes `la` use an
           installed libarchive instead of its own.
           NOTES
-          gh release create "$GITHUB_REF_NAME" dist/la-*.tar.gz dist/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist/la-*.tar.gz dist/la_*.deb dist/la-*.rpm dist/SHA256SUMS \
             --title "la $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
 
       # The Homebrew formula, from the release just made. TAP_DEPLOY_KEY is a

@@ -502,8 +502,221 @@
     (let ((man (read-file "la.1"))
           (zsh (read-file "_la")))
       (is-true (search ".Sh COMMANDS" man))
-      (dolist (command '("extract" "add" "remove" "list" "cat" "test" "info" "diff"))
+      (dolist (command '("extract" "add" "remove" "convert" "list" "cat" "test" "info" "diff"))
         (is-true (search (format nil ".Ss ~A" command) man) "~A not in la.1" command)
         (is-true (search (format nil "'~A[" command) zsh) "~A not in _la" command))
       (is-true (search "#compdef la" zsh))
       (is-true (search "complete -o bashdefault" (read-file "la.bash"))))))
+
+;;; convert.
+
+(defun names-in (archive)
+  (sort (mapcar (lambda (n) (string-right-trim "/" n)) (lines (la-ok "l" archive))) #'string<))
+
+(test convert-between-formats
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "p.tar.gz" "proj" "loose.txt")
+    (let ((names (names-in "p.tar.gz")))
+      (dolist (out '("p.zip" "p.7z" "p.tar.xz" "p.cpio" "p.tar"))
+        (la-ok "convert" "-q" "p.tar.gz" out)
+        (is (equal names (names-in out)) "~A has other names" out)
+        (is (equal '(0 "read me") (multiple-value-list (la-cat out "proj/README")))))
+      ;; Compression and format come from the name, as for la a.
+      (libarchive:with-archive-reader (r (merge-pathnames "p.tar.xz"))
+        (libarchive:next-entry r)
+        (is (equal '("xz") (libarchive:archive-filter-names r))))
+      ;; -x leaves things out.
+      (la-ok "convert" "-q" "-x" "*.o" "p.zip" "small.tar.zst")
+      (is (equal (remove "proj/src/main.o" names :test #'string=) (names-in "small.tar.zst"))))
+    ;; OUT exists: -f, which also recompresses in place.
+    (is (= 1 (la "convert" "p.zip" "p.7z")))
+    (la-ok "convert" "-q" "-f" "-l" "9" "p.tar.gz" "p.tar.gz")
+    (la-ok "t" "-q" "p.tar.gz")
+    (is (null (dot-la-files)))
+    (is (= 2 (la "convert" "p.zip")))
+    (is (= 2 (la "convert" "p.zip" "p.unknown")))))
+
+(test convert-compressed-files
+  (in-scratch-directory
+    (write-file "notes.txt" "some notes")
+    (la-ok "a" "-q" "notes.txt.gz" "notes.txt")
+    ;; Another compression, then into an archive under its own name...
+    (la-ok "convert" "-q" "notes.txt.gz" "notes.txt.xz")
+    (is (equal '(0 "some notes") (multiple-value-list (la-cat "notes.txt.xz"))))
+    (la-ok "convert" "-q" "notes.txt.xz" "n.tar.zst")
+    (is (equal '("notes.txt") (names-in "n.tar.zst")))
+    (is (equal '(0 "some notes") (multiple-value-list (la-cat "n.tar.zst" "notes.txt"))))
+    ;; ...and an archive of one file back to a compressed file.
+    (la-ok "convert" "-q" "n.tar.zst" "again.lz4")
+    (is (equal '(0 "some notes") (multiple-value-list (la-cat "again.lz4"))))
+    (make-project)
+    (la-ok "a" "-q" "p.zip" "proj")
+    (multiple-value-bind (code out err) (la "convert" "p.zip" "p.gz")
+      (declare (ignore out))
+      (is (= 1 code))
+      (is-true (search "more than one file" err)))
+    (is (not (exists "p.gz")))))
+
+(test convert-encrypted
+  (in-scratch-directory
+    (make-project)
+    (la-ok "a" "-q" "-p" "pw" "secret.zip" "proj")
+    ;; Zip to zip stays encrypted, with the same passphrase.
+    (la-ok "convert" "-q" "-p" "pw" "secret.zip" "again.zip")
+    (is (= 1 (la "t" "-q" "again.zip")))
+    (la-ok "t" "-q" "-p" "pw" "again.zip")
+    ;; Anything else is written decrypted, and says so.
+    (multiple-value-bind (code out err) (la "convert" "-p" "pw" "secret.zip" "open.tar")
+      (declare (ignore out))
+      (is (= 0 code))
+      (is-true (search "not encrypted" err)))
+    (is (equal '(0 "read me") (multiple-value-list (la-cat "open.tar" "proj/README"))))
+    (is (= 1 (la "convert" "-q" "secret.zip" "nopass.tar")))
+    (is (not (exists "nopass.tar")))
+    (is (null (dot-la-files)))))
+
+;;; l --json.
+
+(test list-json
+  (in-scratch-directory
+    (write-file "d/say \"hi\".txt" "x")
+    (write-file "d/plain" "yz")
+    (sb-posix:symlink "plain" (uiop:native-namestring (merge-pathnames "d/link")))
+    (la-ok "a" "-q" "d.tar" "d")
+    (let* ((json (la-ok "l" "--json" "d.tar"))
+           (rows (remove-if-not (lambda (l) (search "{" l)) (lines json))))
+      (is (char= #\[ (char json 0)))
+      (is (string= "]" (car (last (lines json)))))
+      (is (= 4 (length rows)))
+      ;; One object per line, commas between them but not after the last.
+      (is (= 3 (count-if (lambda (r) (last-char-is r #\,)) rows)))
+      (is-true (search "\"name\": \"d/say \\\"hi\\\".txt\"" json))
+      (is-true (search "\"type\": \"symlink\"" json))
+      (is-true (search "\"link\": \"plain\"" json))
+      (is-true (search "\"type\": \"file\", \"size\": 2, \"mode\": \"0644\"" json))
+      (is-true (search "\"type\": \"directory\"" json))
+      (is-true (search "\"encrypted\": false" json)))
+    (is (string= (format nil "[]~%") (la-ok "l" "--json" "-x" "d" "d.tar")))
+    (is (= 2 (la "l" "--json" "-l" "d.tar")))))
+
+(defun last-char-is (string char)
+  (and (plusp (length string)) (char= char (char string (1- (length string))))))
+
+;;; -x, --newer and --older.
+
+(defun set-mtime (name universal-time)
+  (let ((unix (- universal-time (encode-universal-time 0 0 0 1 1 1970 0))))
+    (sb-posix:utimes (uiop:native-namestring (merge-pathnames name)) unix unix)))
+
+(test choosing-by-name-and-time
+  (in-scratch-directory
+    (make-project)
+    (let ((old (encode-universal-time 0 0 0 1 1 2020 0))
+          (mid (encode-universal-time 0 0 0 1 1 2023 0)))
+      (set-mtime "proj/src/main.o" old)
+      (set-mtime "proj/README" old)
+      (write-file "stamp" "")
+      (set-mtime "stamp" mid)
+      ;; la a: by time, through a directory left out for its own time.
+      (set-mtime "proj/src" old)
+      (la-ok "a" "-q" "--newer" "stamp" "new.tar" "proj")
+      (is (equal '("proj" "proj/src/main.c") (names-in "new.tar")))
+      (la-ok "a" "-q" "--older" "2023-01-01" "old.tar" "proj")
+      (is (equal '("proj/README" "proj/src" "proj/src/main.o") (names-in "old.tar")))
+      (la-ok "a" "-q" "all.tar" "proj")
+      ;; la l, x and cat.
+      (is (equal '("proj" "proj/README" "proj/src" "proj/src/main.c")
+                 (sort (mapcar (lambda (n) (string-right-trim "/" n))
+                               (lines (la-ok "l" "-x" "*.o" "all.tar")))
+                       #'string<)))
+      (is (equal '("proj/README" "proj/src/" "proj/src/main.o")
+                 (sort (lines (la-ok "l" "--older" "stamp" "all.tar")) #'string<)))
+      ;; Excluding a directory takes what is under it.
+      (is (equal '("proj/README")
+                 (lines (la-ok "l" "--older" "stamp" "-x" "proj/src" "all.tar"))))
+      (la-ok "x" "-q" "-C" "out" "-x" "src" "all.tar")
+      (is (exists "out/proj/README"))
+      (is (not (exists "out/proj/src/")))
+      (la-ok "x" "-q" "-C" "out2" "--newer" "stamp" "all.tar")
+      (is (exists "out2/proj/src/main.c"))
+      (is (not (exists "out2/proj/README")))
+      (is (equal '(0 "read me") (multiple-value-list (la-cat "all.tar" "--older" "stamp" "-x" "*.o"))))
+      ;; A date that is not one.
+      (multiple-value-bind (code out err) (la "l" "--newer" "someday" "all.tar")
+        (declare (ignore out))
+        (is (= 2 code))
+        (is-true (search "--newer" err))))))
+
+;;; Attacks other extractors have fallen to (the library's own refusals are
+;;; tested in its suite).
+
+(defun write-archive (name octets)
+  (with-open-file (s (merge-pathnames name) :direction :output :element-type '(unsigned-byte 8)
+                                            :if-exists :supersede)
+    (write-sequence octets s)))
+
+(defun mode-of (name)
+  (logand #o7777 (sb-posix:stat-mode (sb-posix:lstat (uiop:native-namestring (merge-pathnames name))))))
+
+(test refused-entries-are-failures
+  (in-scratch-directory
+    (write-file "outside/victim" "original")
+    (write-archive "evil.tar" (libarchive:with-archive-to-octets (w :format :pax)
+                                (libarchive:add-entry w "a" :symlink "../outside")
+                                (libarchive:add-entry w "a/pwned" :data "x")))
+    (multiple-value-bind (code out err) (la "x" "evil.tar" "-C" "in")
+      (declare (ignore out))
+      (is (= 1 code))
+      (is-true (search "symlink" err))
+      (is-true (search "1 failed" err)))
+    (is (not (exists "outside/pwned")))))
+
+(test existing-symlinks-are-not-replaced
+  (in-scratch-directory
+    (ensure-directories-exist (merge-pathnames "in/"))
+    (sb-posix:symlink "elsewhere" (uiop:native-namestring (merge-pathnames "in/x")))
+    (write-archive "d.tar" (libarchive:with-archive-to-octets (w :format :pax)
+                             (libarchive:add-entry w "x/")
+                             (libarchive:add-entry w "x/f" :data "y")))
+    (is (= 1 (la "x" "-q" "d.tar" "-C" "in")))
+    (is (string= "elsewhere" (sb-posix:readlink (uiop:native-namestring (merge-pathnames "in/x")))))
+    (la-ok "x" "-q" "--overwrite" "d.tar" "-C" "in")
+    (is (string= "y" (read-file "in/x/f")))))
+
+(test modes-are-masked-by-the-umask
+  (in-scratch-directory
+    (write-archive "m.tar" (libarchive:with-archive-to-octets (w :format :pax)
+                             (libarchive:add-entry w "m/")
+                             (libarchive:add-entry w "m/open" :data "x" :perm #o777)
+                             (libarchive:add-entry w "m/suid" :data "x" :perm #o4755)
+                             (libarchive:add-entry w "m/dir/" :perm #o777)))
+    (let ((umask (let ((u (sb-posix:umask 0))) (sb-posix:umask u) u)))
+      (la-ok "x" "-q" "m.tar" "-C" "a")
+      (unless (zerop (sb-posix:geteuid))
+        (is (= (logandc2 #o777 umask) (mode-of "a/m/open")))
+        (is (= (logandc2 #o777 umask) (mode-of "a/m/dir"))))
+      (la-ok "x" "-q" "--same-permissions" "m.tar" "-C" "b")
+      (is (= #o777 (mode-of "b/m/open")))
+      ;; Owners are not restored, and so neither is setuid.
+      (is (= #o755 (mode-of "b/m/suid"))))))
+
+(test names-cannot-reach-the-terminal
+  (in-scratch-directory
+    (let ((name (format nil "evil~C]0;owned~C~Cfake line\\x" (code-char 27) (code-char 7) #\Newline)))
+      (write-archive "e.tar" (libarchive:with-archive-to-octets (w :format :pax)
+                               (libarchive:add-entry w name :data "x")
+                               (libarchive:add-entry w (concatenate 'string "../" name) :data "x")))
+      (flet ((clean-p (s) (notany (lambda (c) (member (char-code c) '(7 27))) s)))
+        (let ((listing (la-ok "l" "e.tar")))
+          (is-true (clean-p listing))
+          (is (= 2 (length (lines listing))))
+          (is-true (search "evil\\033]0;owned\\007\\nfake line\\\\x" listing)))
+        (multiple-value-bind (code out err) (la "x" "-v" "e.tar" "-C" "in")
+          (is (= 1 code))
+          (is-true (clean-p out))
+          (is-true (clean-p err))
+          ;; As tar's -v: each name as it is tried, the refused one too.
+          (is (= 2 (length (lines out)))))
+        ;; JSON has escapes of its own.
+        (is-true (search "\\u001B]0;owned\\u0007\\nfake line\\\\x" (la-ok "l" "--json" "e.tar")))))))

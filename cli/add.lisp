@@ -18,14 +18,13 @@ at the top level)."
              (if (or (null last) (string= last "..") (string= last ".")) nil last)))
           (t name))))
 
-(defun writer-settings (cmd archive-name)
-  "FORMAT, FILTERS and libarchive OPTIONS for the archive, from the options and
-ARCHIVE-NAME's extension."
+(defun writer-settings (cmd archive-name &key (passphrase (passphrase-from cmd)))
+  "FORMAT, FILTERS, libarchive OPTIONS and PASSPHRASE for the archive, from the
+options and ARCHIVE-NAME's extension. PASSPHRASE, by default -p's, encrypts."
   (let ((format-option (clingon:getopt cmd :format))
         (filter-options (clingon:getopt cmd :compression))
         (level (clingon:getopt cmd :level))
-        (threads (clingon:getopt cmd :threads))
-        (passphrase (passphrase-from cmd)))
+        (threads (clingon:getopt cmd :threads)))
     (multiple-value-bind (format filters)
         (cond (format-option
                (values (parse-format format-option)
@@ -69,7 +68,7 @@ ARCHIVE-NAME's extension."
           (push '("zip:encryption" . "aes256") options))
         (values format filters (nreverse options) passphrase)))))
 
-(defun add-inputs (w inputs disk-paths format &key read-disk-flags self excludes verbose)
+(defun add-inputs (w inputs disk-paths format &key read-disk-flags self excludes match verbose)
   "Write each of INPUTS (found at DISK-PATHS) to the writer W; return the
 number of entries written."
   (let ((count 0))
@@ -88,14 +87,15 @@ number of entries written."
                              :symlink (sb-posix:readlink (uiop:native-namestring disk))
                              :mtime (+ (sb-posix:stat-mtime stat)
                                        (encode-universal-time 0 0 0 1 1 1970 0))))
-                (when verbose (format t "~A~%" (or name (file-namestring disk))))
+                (when verbose (say "~A" (or name (file-namestring disk))))
                 (incf count))
                (t
                 (incf count
                       (archive-directory
-                       disk w :name name :read-disk-flags read-disk-flags
+                       disk w :name name :read-disk-flags read-disk-flags :match match
                        :directories (not (member format *formats-without-directories*))
-                       :filter (entry-filter disk name self excludes verbose))))))
+                       :filter (entry-filter disk name self excludes)
+                       :report (and verbose (lambda (stored) (say "~A" stored))))))))
     count))
 
 (defun file-size (path)
@@ -128,35 +128,41 @@ number of entries written."
                             (nth-value 2 (archive-kind archive-name)))))
           (when (and appending (null target))
             (usage-error "--append needs an archive file, not standard output"))
-          (let ((add-keys (list :read-disk-flags read-disk-flags :excludes excludes :verbose verbose))
-                (writer-keys (list :format format :filters filters :options options
-                                   :passphrase passphrase)))
-            (cond ((and appending (lexists-p target))
-                   (append-to-archive cmd archive-name target inputs disk-paths format
-                                      writer-keys add-keys))
-                  ((and target (lexists-p target) (not (clingon:getopt cmd :force)))
-                   (fail "~A already exists (use -f to replace it, or -r to add to it)"
-                         archive-name))
-                  (t
-                   (let ((count 0) (ok nil))
-                     (unwind-protect
-                          (let ((w (apply #'open-archive-writer (or target (stdout-octets))
-                                          writer-keys)))
-                            ;; As WITH-ARCHIVE-WRITER: a failure aborts, with no trailer.
-                            (unwind-protect
-                                 (progn
-                                   (setf count (apply #'add-inputs w inputs disk-paths format
-                                                      :self (and target (uiop:native-namestring
-                                                                         (truename target)))
-                                                      add-keys))
-                                   (setf ok t))
-                              (close-archive w :abort (not ok))))
-                       ;; A failed archive is removed rather than left half-written.
-                       (when (and target (not ok))
-                         (ignore-errors (delete-file target))))
-                     (when target
-                       (note "~A: ~D entr~:@P, ~A" archive-name count (human-size (file-size target))))
-                     0)))))))))
+          (call-with-entry-match
+           cmd
+           (lambda (match)
+             (let ((add-keys (list :read-disk-flags read-disk-flags :excludes excludes :match match
+                                   :verbose verbose))
+                   (writer-keys (list :format format :filters filters :options options
+                                      :passphrase passphrase)))
+               (cond ((and appending (lexists-p target))
+                      (append-to-archive cmd archive-name target inputs disk-paths format
+                                         writer-keys add-keys))
+                     ((and target (lexists-p target) (not (clingon:getopt cmd :force)))
+                      (fail "~A already exists (use -f to replace it, or -r to add to it)"
+                            archive-name))
+                     (t
+                      (let ((count 0) (ok nil))
+                        (unwind-protect
+                             (let ((w (apply #'open-archive-writer (or target (stdout-octets))
+                                             writer-keys)))
+                               ;; As WITH-ARCHIVE-WRITER: a failure aborts, with no trailer.
+                               (unwind-protect
+                                    (progn
+                                      (setf count (apply #'add-inputs w inputs disk-paths format
+                                                         :self (and target (uiop:native-namestring
+                                                                            (truename target)))
+                                                         add-keys))
+                                      (setf ok t))
+                                 (close-archive w :abort (not ok))))
+                          ;; A failed archive is removed rather than left half-written.
+                          (when (and target (not ok))
+                            (ignore-errors (delete-file target))))
+                        (when target
+                          (note "~A: ~D entr~:@P, ~A" archive-name count (human-size (file-size target))))
+                        0)))))
+           ;; -x is la a's own: it matches the names as stored, not as on disk.
+           :exclude nil))))))
 
 (defun private-file (directory)
   "A new, empty file in DIRECTORY that only this user can read."
@@ -165,45 +171,65 @@ number of entries written."
     (sb-posix:close fd)
     (uiop:parse-native-namestring name)))
 
+(defun call-with-writer (target writer-keys function)
+  "WITH-ARCHIVE-WRITER, with the keys in a list: call FUNCTION with a writer on
+TARGET, then close it, or abort it if FUNCTION fails."
+  (let ((w (apply #'open-archive-writer target writer-keys))
+        (ok nil))
+    (unwind-protect (multiple-value-prog1 (funcall function w) (setf ok t))
+      (close-archive w :abort (not ok)))))
+
+(defun call-with-replacement (target function)
+  "Call FUNCTION with a new file beside TARGET to write, then rename it over
+TARGET, with TARGET's permissions if it exists (else the umask's). If FUNCTION
+fails, the new file is removed and TARGET left as it was."
+  (let* ((directory (uiop:pathname-directory-pathname target))
+         (out (if (uiop:directory-exists-p directory)
+                  ;; Beside the target, so that the rename cannot cross file systems.
+                  (private-file (truename directory))
+                  (fail "~A: no such directory" (uiop:native-namestring directory))))
+         (ok nil))
+    (unwind-protect
+         (multiple-value-prog1 (funcall function out)
+           (sb-posix:chmod (uiop:native-namestring out)
+                           (if (lexists-p target)
+                               (logand #o7777 (sb-posix:stat-mode
+                                               (sb-posix:stat (uiop:native-namestring target))))
+                               (logandc2 #o666 (let ((mask (sb-posix:umask 0)))
+                                                 (sb-posix:umask mask)
+                                                 mask))))
+           (sb-posix:rename (uiop:native-namestring out) (uiop:native-namestring target))
+           (setf ok t))
+      (unless ok (ignore-errors (delete-file out))))))
+
 (defun rewrite-archive (cmd archive-name writer-keys &key (keep (constantly t)) spool)
   "Write ARCHIVE-NAME afresh with WRITER-KEYS: its entries whose names KEEP is
 true of, then every entry of SPOOL (an archive file) if given. The new copy is
 written beside the original and renamed over it only once it is complete, so a
 failure leaves the original as it was. Returns the entries kept and dropped."
-  (let* ((passphrase (getf writer-keys :passphrase))
-         (self (uiop:native-namestring (truename (user-file archive-name))))
-         ;; Beside the archive, so that the rename cannot cross file systems.
-         (out (private-file (uiop:pathname-directory-pathname self)))
-         (ok nil) (kept 0) (dropped 0))
-    (unwind-protect
-         (progn
-           (let ((w (apply #'open-archive-writer out writer-keys))
-                 (written nil))
-             (unwind-protect
-                  (progn
-                    (with-archive-reader (r self :passphrase
-                                            (reader-passphrase
-                                             (passphrase-source cmd archive-name)))
-                      (do-archive-entries (e r)
-                        (cond ((funcall keep (entry-pathname e))
-                               (when (and (entry-data-encrypted-p e) (null passphrase))
-                                 (fail "~A has encrypted entries: give -p to keep them encrypted"
-                                       archive-name))
-                               (transfer-entry r w e)
-                               (incf kept))
-                              (t (incf dropped)))))
-                    (when spool
-                      (with-archive-reader (r spool)
-                        (do-archive-entries (e r)
-                          (transfer-entry r w e))))
-                    (setf written t))
-               (close-archive w :abort (not written))))
-           ;; Into place, with the original's permissions.
-           (sb-posix:chmod (uiop:native-namestring out)
-                           (logand #o7777 (sb-posix:stat-mode (sb-posix:stat self))))
-           (sb-posix:rename (uiop:native-namestring out) self)
-           (setf ok t))
-      (unless ok (ignore-errors (delete-file out))))
+  (let ((passphrase (getf writer-keys :passphrase))
+        (self (truename (user-file archive-name)))
+        (kept 0) (dropped 0))
+    (call-with-replacement
+     self
+     (lambda (out)
+       (call-with-writer
+        out writer-keys
+        (lambda (w)
+          (with-archive-reader (r self :passphrase (reader-passphrase
+                                                    (passphrase-source cmd archive-name)))
+            (do-archive-entries (e r)
+              (cond ((funcall keep (entry-pathname e))
+                     (when (and (entry-data-encrypted-p e) (null passphrase))
+                       (fail "~A has encrypted entries: give -p to keep them encrypted"
+                             archive-name))
+                     (transfer-entry r w e)
+                     (incf kept))
+                    (t (incf dropped)))))
+          (when spool
+            (with-archive-reader (r spool)
+              (do-archive-entries (e r)
+                (transfer-entry r w e))))))))
     (values kept dropped)))
 
 (defun append-to-archive (cmd archive-name target inputs disk-paths format writer-keys add-keys)
@@ -229,9 +255,9 @@ before the old entries are copied."
       (ignore-errors (delete-file spool)))
     0))
 
-(defun entry-filter (disk name self excludes verbose)
+(defun entry-filter (disk name self excludes)
   "ARCHIVE-DIRECTORY's filter for the input DISK stored as NAME: leaves out the
-archive being written, and anything --exclude matches; prints names if VERBOSE."
+archive being written, and anything --exclude matches."
   (let ((root (string-right-trim "/" (uiop:native-namestring (truename disk)))))
     (lambda (e)
       (let* ((path (entry-pathname e))
@@ -241,8 +267,7 @@ archive being written, and anything --exclude matches; prints names if VERBOSE."
                               (if name (format nil "~A/~A" name rest) rest))))))
         (cond ((and self (string= path self)) nil)
               ((and stored (some (lambda (p) (path-matches-p p stored)) excludes)) nil)
-              (t (when (and verbose stored) (format t "~A~%" stored))
-                 t))))))
+              (t t))))))
 
 (register-command
  "add"
@@ -253,33 +278,35 @@ archive being written, and anything --exclude matches; prints names if VERBOSE."
     :usage "[options] ARCHIVE FILE..."
     :description "create ARCHIVE from files and directories; its name picks the format"
     :options (list (clingon:make-option :string :short-name #\F :long-name "format" :key :format
-                                                :parameter "FORMAT"
-                                                :description "tar, pax, ustar, gnutar, zip, 7z, cpio, iso, xar, ar, shar, mtree, warc, raw")
+                                        :parameter "FORMAT"
+                                        :description "tar, pax, ustar, gnutar, zip, 7z, cpio, iso, xar, ar, shar, mtree, warc, raw")
                    (clingon:make-option :list :short-name #\z :long-name "compression"
-                                              :key :compression :parameter "FILTER"
-                                              :description "gzip, bzip2, xz, zstd, lz4, lzip, lzma, compress, none (repeatable)")
+                                        :key :compression :parameter "FILTER"
+                                        :description "gzip, bzip2, xz, zstd, lz4, lzip, lzma, compress, none (repeatable)")
                    (clingon:make-option :integer :short-name #\l :long-name "level" :key :level
-                                                 :parameter "N" :description "compression level")
+                                        :parameter "N" :description "compression level")
                    (clingon:make-option :integer :short-name #\T :long-name "threads" :key :threads
-                                                 :parameter "N"
-                                                 :description "compress with N threads (zstd, xz; 0: one per CPU)")
+                                        :parameter "N"
+                                        :description "compress with N threads (zstd, xz; 0: one per CPU)")
                    (clingon:make-option :string :short-name #\p :long-name "passphrase"
-                                                :key :passphrase :parameter "PASS"
-                                                :description "encrypt (zip, AES-256)")
+                                        :key :passphrase :parameter "PASS"
+                                        :description "encrypt (zip, AES-256)")
                    (clingon:make-option :string :short-name #\C :long-name "directory"
-                                                :key :directory :parameter "DIR"
-                                                :description "FILEs are relative to DIR")
+                                        :key :directory :parameter "DIR"
+                                        :description "FILEs are relative to DIR")
                    (clingon:make-option :list :short-name #\x :long-name "exclude" :key :exclude
-                                              :parameter "GLOB"
-                                              :description "leave out matching paths (repeatable)")
+                                        :parameter "GLOB"
+                                        :description "leave out matching paths (repeatable)")
+                   (newer-option)
+                   (older-option)
                    (clingon:make-option :flag :long-name "no-xattrs" :key :no-xattrs
-                                              :description "do not store extended attributes")
+                                        :description "do not store extended attributes")
                    (clingon:make-option :flag :short-name #\f :long-name "force" :key :force
-                                              :description "replace ARCHIVE if it exists")
+                                        :description "replace ARCHIVE if it exists")
                    (clingon:make-option :flag :short-name #\r :long-name "append" :key :append
-                                              :description "add to ARCHIVE if it exists, replacing entries of the same name")
+                                        :description "add to ARCHIVE if it exists, replacing entries of the same name")
                    (clingon:make-option :flag :short-name #\v :long-name "verbose" :key :verbose
-                                              :description "print each name as it is added")
+                                        :description "print each name as it is added")
                    (clingon:make-option :flag :short-name #\q :long-name "quiet" :key :quiet
-                                              :description "no summary line"))
+                                        :description "no summary line"))
     :handler #'add/handler)))

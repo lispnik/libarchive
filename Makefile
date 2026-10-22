@@ -1,6 +1,7 @@
 # Build and test the libarchive binding.
 #
 #   make test       -- run the FiveAM suite
+#   make fuzz       -- test, with 5000 damaged archives per format (FUZZ=N for more)
 #   make check      -- test, then load everything and report the library version
 #   make examples   -- run every program in examples/ (each checks its own output)
 #   make example NAME=quickstart  -- run one
@@ -39,7 +40,7 @@ LIBARCHIVE_INCLUDE ?= $(shell brew --prefix libarchive 2>/dev/null || echo /usr)
 BOOT := --eval "(require :asdf)" \
         --eval "(asdf:initialize-source-registry \`(:source-registry (:tree ,(truename \"./\")) :ignore-inherited-configuration))"
 
-.PHONY: test check examples example la docs cli-test generate clean help
+.PHONY: test fuzz check examples example la docs cli-test generate clean help
 .DEFAULT_GOAL := test
 
 # Each example in its own fresh image, so none can lean on another's definitions.
@@ -50,6 +51,10 @@ RUN_EXAMPLE = $(LISP) $(LISP_FLAGS) $(BOOT) --eval "(asdf:load-system :libarchiv
 test:
 	$(LISP) $(LISP_FLAGS) $(BOOT) \
 	  --eval "(asdf:test-system :libarchive)" $(QUIT) </dev/null
+
+FUZZ ?= 5000
+fuzz:
+	LIBARCHIVE_FUZZ_ITERATIONS=$(FUZZ) $(MAKE) test
 
 check: test
 	$(LISP) $(LISP_FLAGS) $(BOOT) \

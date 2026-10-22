@@ -189,3 +189,65 @@ own lstat, so the tests need nothing implementation-specific."
         ;; Renamed, and the renamed ../out is still refused.
         (is (equal '("README") names))
         (is (string= "r" (uiop:read-file-string (merge-pathnames "README" out))))))))
+
+;;; Attacks other extractors have fallen to. Each archive tries to reach
+;;; OUTSIDE, a sibling of the target directory.
+
+(defun outside-untouched-p (outside)
+  (and (equal (mapcar #'file-namestring (uiop:directory-files outside)) '("victim"))
+       (null (uiop:subdirectories outside))
+       (octets= (babel:string-to-octets "original") (read-file (merge-pathnames "victim" outside)))))
+
+(defmacro with-victim ((dest outside) &body body)
+  (let ((dir (gensym)))
+    `(with-temp-directory (,dir)
+       (let ((,dest (merge-pathnames "dest/" ,dir))
+             (,outside (merge-pathnames "outside/" ,dir)))
+         (write-file (merge-pathnames "victim" ,outside) "original")
+         (ensure-directories-exist ,dest)
+         ,@body))))
+
+(defun extract-skipping (archive dest &rest keys)
+  "EXTRACT-ARCHIVE, skipping refused entries; returns what was extracted and
+the messages of what was refused."
+  (let ((refused '()))
+    (values (handler-bind ((archive-error (lambda (c)
+                                            (push (archive-condition-message c) refused)
+                                            (invoke-restart 'skip-entry))))
+              (apply #'extract-archive archive dest keys))
+            refused)))
+
+(test extract-refuses-paths-through-symlinks
+  ;; libarchive refuses these (SECURE_SYMLINKS), but archive_read_extract2
+  ;; reports the refusal as a warning; they must be errors, not "extracted".
+  (with-victim (dest outside)
+    (dolist (archive (list (with-archive-to-octets (w :format :pax)
+                             (add-entry w "a" :symlink (uiop:native-namestring outside))
+                             (add-entry w "a/pwned" :data "x"))
+                           (with-archive-to-octets (w :format :pax)
+                             (add-entry w "b" :symlink "c")
+                             (add-entry w "c" :symlink "../outside")
+                             (add-entry w "b/pwned" :data "x"))
+                           (with-archive-to-octets (w :format :pax)
+                             (add-entry w "d" :symlink "../outside")
+                             (add-entry w "h" :hardlink "d/victim" :data "pwned"))))
+      (signals archive-error (extract-archive archive dest))
+      (multiple-value-bind (extracted refused) (extract-skipping archive dest)
+        (is (= 1 (length refused)))
+        (is (notany (lambda (n) (search "pwned" n)) extracted))
+        (is (not (member "h" extracted :test #'string=))))
+      (is-true (outside-untouched-p outside)))))
+
+(test extract-leaves-the-target-directory-alone
+  ;; `tar cf x.tar .' stores "./": extracted, it would set the target
+  ;; directory's own mode and times.
+  (with-victim (dest outside)
+    (let ((before (stat-mode dest)))
+      (is (equal '("./f")
+                 (extract-archive (with-archive-to-octets (w :format :pax)
+                                    (add-entry w "./" :perm #o777 :mtime 0)
+                                    (add-entry w "././" :perm #o777 :mtime 0)
+                                    (add-entry w "./f" :data "x"))
+                                  dest)))
+      (is (= before (stat-mode dest)))
+      (is-true (outside-untouched-p outside)))))

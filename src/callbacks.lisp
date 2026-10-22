@@ -70,15 +70,6 @@ handle. If there is no such handle, or BODY signals, return FAILURE."
               (cffi:foreign-string-alloc passphrase :encoding :utf-8))
         (cffi:null-pointer))))
 
-;;; Extraction progress: the only callback with no struct archive argument.
-
-(cffi:defcallback progress-callback :void ((data :pointer))
-  (let ((handle (find-registered data)))
-    (when handle
-      (handler-case (funcall (handle-progress-function handle))
-        (serious-condition (c)
-          (note-callback-error handle nil c))))))
-
 ;;; Disk traversal: return 1 to keep the entry, 0 to skip it.
 
 (define-guarded-callback metadata-filter-callback :int (a data (entry :pointer))

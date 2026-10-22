@@ -15,7 +15,7 @@
         (append (remove name *command-makers* :key #'car :test #'string=)
                 (list (cons name maker)))))
 
-(defparameter *command-order* '("extract" "add" "remove" "list" "cat" "test" "info" "diff"))
+(defparameter *command-order* '("extract" "add" "remove" "convert" "list" "cat" "test" "info" "diff"))
 
 (defun top-level-command (&key (libarchive-details t))
   "la's clingon command tree. LIBARCHIVE-DETAILS NIL leaves libarchive out of
@@ -31,7 +31,8 @@ the version, so that the docs can be made where it cannot be loaded."
 la a ARCHIVE FILE...       create; the format comes from the name
 la a -r ARCHIVE FILE...    add, replacing entries of the same name
 la rm ARCHIVE ENTRY...     remove entries
-la l ARCHIVE               list (-l for the long form)
+la convert IN OUT          the same entries, another format
+la l ARCHIVE               list (-l: long form, --json)
 la cat ARCHIVE [ENTRY...]  write files' contents to standard output
 la t ARCHIVE               read everything, checking the data
 la i ARCHIVE               format, compression and sizes
@@ -53,7 +54,7 @@ LA_PASSPHRASE is used when -p is not given."
               2)))
 
 (defun report (control &rest args)
-  (format *error-output* "~&la: ~?~%" control args))
+  (format *error-output* "~&la: ~A~%" (printable (format nil "~?" control args))))
 
 (defun option-name (option)
   (string-trim " " (clingon:option-usage-details :default option)))
@@ -62,7 +63,7 @@ LA_PASSPHRASE is used when -p is not given."
   "Run la with ARGUMENTS (argv without the program name); return the exit code.
 Never exits, so tests can call it."
   (handler-bind ((archive-warning (lambda (c)
-                                    (report "warning: ~A" (or (archive-condition-message c) c))
+                                    (report "warning: ~A" (archive-message c))
                                     (muffle-warning c)))
                  (error (lambda (c)
                           (declare (ignore c))
@@ -87,7 +88,7 @@ Never exits, so tests can call it."
         (report "~A" c)
         (cli-error-code c))
       (archive-error (c)
-        (report "~A" (or (archive-condition-message c) c))
+        (report "~A" (archive-message c))
         1)
       (sb-int:broken-pipe () 0)
       (sb-sys:interactive-interrupt () 130)

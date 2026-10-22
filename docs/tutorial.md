@@ -234,9 +234,34 @@ to combine several trees or add entries of your own alongside.
 any of the keywords in `*extract-flags*`, `:filter` chooses entries, and `:progress`
 reports bytes consumed.
 
+**Choosing entries with libarchive's matcher.** An `archive-match` holds globs to
+include and exclude, time limits and owners; both functions take one as `:match`,
+and `entry-matches-p` asks it about any entry:
+
+```lisp
+(with-archive-match (m :exclude '("*.o" ".git") :newer "2025-01-01")
+  (extract-archive #p"project.tar.zst" #p"restored/" :match m))
+```
+
+- Exclusions match at any directory boundary, and take a directory's contents with
+  it. Inclusions take whole directories (unless `:recursive nil`), and
+  `archive-match-unmatched` says which of them never matched.
+- `:newer` and `:older` are strict, and take a universal time, a pathname (that
+  file's time) or a date string libarchive parses (`"2 weeks ago"` works). `:time
+  :ctime` compares the change time instead.
+- `:uids`, `:gids`, `:unames` and `:gnames` include only those owners.
+- A directory left out by its time is still walked by `archive-directory`, and its
+  files can still be extracted; one left out by a pattern is not. `archive-directory`
+  matches the paths on disk, which are absolute, and its `:report` function hears
+  each name stored.
+
+→ [`examples/match.lisp`](../examples/match.lisp)
+
 **Untrusted archives.** Entries with absolute names or `..` components are always
-refused, whatever the flags. Each refusal signals an `archive-error` with a
-`skip-entry` restart, so you decide whether to carry on:
+refused, whatever the flags, and with `:secure-symlinks` (a default) so is any
+path that would go through a symlink: one the archive created a moment ago, or one
+already on disk. Each refusal signals an `archive-error` with a `skip-entry`
+restart, so you decide whether to carry on:
 
 ```lisp
 (handler-bind ((archive-error (lambda (c) (warn "~A" c) (invoke-restart 'skip-entry))))
@@ -245,6 +270,12 @@ refused, whatever the flags. Each refusal signals an `archive-error` with a
 
 `:no-overwrite` skips existing files *silently*. libarchive reports success for the
 entry it didn't write.
+
+Two more defaults matter for archives from elsewhere. An entry for the target
+directory itself (`./`, which `tar cf x.tar .` writes) is skipped, so the archive
+cannot change that directory's mode or times. And `:perm` restores modes exactly,
+world-writable ones included; without it the umask applies, which is what tar does
+for anyone but root. setuid and setgid survive only with `:owner`.
 
 → [`examples/disk.lisp`](../examples/disk.lisp)
 
@@ -297,6 +328,7 @@ putting the pieces together:
   reports.
 - `:formats '(:raw)` handles bare compressed files.
 - Spooling standard input lets an archive be read twice.
-- `la a -r` and `la rm` rewrite an archive with `transfer-entry`, `la cat` copies
+- `la convert`, `la a -r` and `la rm` rewrite an archive with `transfer-entry`,
+  `-x`, `--newer` and `--older` are an `archive-match`, `la cat` copies
   entry data to standard output with `copy-entry-data`, and `la diff` compares
   entries with the disk as they are read.

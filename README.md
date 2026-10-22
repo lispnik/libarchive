@@ -70,6 +70,13 @@ The [tutorial](docs/tutorial.md) walks through everything below in more depth, a
 (archive-directory #p"/tmp/out/" #p"/tmp/out.tar.zst" :format :pax-restricted
                    :filters :zstd
                    :filter (lambda (e) (not (search "/.git" (entry-pathname e)))))
+
+;; Choosing entries: libarchive's matcher, by glob, time and owner
+(with-archive-match (m :exclude "*.o" :newer "2025-01-01")   ; or a universal time, a file
+  (extract-archive #p"/tmp/x.tar.gz" #p"/tmp/out/" :match m)
+  (with-archive-reader (r #p"/tmp/x.tar.gz")
+    (do-archive-entries (e r)
+      (when (entry-matches-p m e) ...))))
 ```
 
 ### Entries
@@ -84,7 +91,9 @@ Accessors are `setf`-able: `entry-pathname`, `entry-type` (`:regular` `:director
 `entry-perm`, `entry-mode`, `entry-uid`/`gid`/`uname`/`gname`, `entry-symlink`,
 `entry-hardlink`, `entry-mtime`/`atime`/`ctime`/`birthtime`. Times are **universal times**,
 and NIL means unset. Strings go through libarchive's `_utf8` accessors, so results don't
-depend on the process locale.
+depend on the process locale. A name stored in bytes that aren't UTF-8 (old tarballs
+often have Latin-1 ones) reads as Latin-1, byte for character, rather than signalling
+a decoding error.
 
 ### Errors
 
@@ -100,8 +109,12 @@ Each condition carries `archive-condition-message` (libarchive's `archive_error_
 stream's `read-sequence`, a passphrase function, a filter) is re-signalled as itself
 after libarchive returns. It never unwinds through C.
 
-`extract-archive` refuses entries with absolute names or `..` components, and offers a
-`skip-entry` restart for those and for any other per-entry failure.
+`extract-archive` refuses entries with absolute names or `..` components, and those
+libarchive refuses (with the default `:secure-symlinks`, any path through a symlink),
+and offers a `skip-entry` restart for those and for any other per-entry failure. It
+skips an entry for the target directory itself (`./`). Its default flags restore
+modes in full, as `tar -p` does: leave `:perm` out of `:flags` to apply the umask
+instead, as `la x` does.
 
 ### Callbacks
 
@@ -114,6 +127,8 @@ cffi-callback-closures) aren't needed, and neither is libffi.
 
 - `transfer-entry` copies a reader's current entry to a writer, streaming the data,
   so an archive can be converted or rewritten without holding entries in memory.
+- Damaged archives fail as `archive-condition`s, never as Lisp errors: the test suite
+  reads thousands of mutated archives of every format to check (`make fuzz` for more).
 - A handle isn't thread-safe. Use one per thread; separate handles in separate threads
   are fine.
 - In-memory and stream output isn't padded except for uncompressed tar/cpio, which keep
@@ -150,14 +165,34 @@ la diff backup.tar.gz -C ~/project     # what has changed since the archive was 
 la rm site.tar.zst site/drafts         # remove entries (the archive is rewritten)
 la cat logs.zip 'app/*.log' | less     # files' contents to standard output
 la a -T 0 big.tar.zst data/            # compress with a thread per CPU (zstd, xz)
+la convert photos.zip photos.tar.zst   # the same entries in another format
+la x -x '*.o' --newer 2025-01-01 b.tgz # leave out by glob; choose by time (or a file's)
 la l -l release.7z                     # list; t tests, i describes
+la l --json release.7z | jq .          # the listing as JSON
 curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F)
 ```
 
 **Behaviour:**
 - `la x` never overwrites existing files without `--overwrite`. It reports each
   one it skips and exits 1.
-- It refuses entries that would escape the target directory.
+- It refuses entries that would escape the target directory: absolute names, `..`,
+  and paths through a symlink, whether the archive made it (`a -> /etc`, then
+  `a/passwd`) or it was already there; each counts as a failure, and exits 1. An
+  existing symlink is not replaced by a directory without `--overwrite` either.
+- A `./` entry is skipped, so an archive cannot change the permissions or times of
+  the directory it is extracted into.
+- Modes are restored less the umask, as tar does for anyone but root, so an archive
+  cannot leave world-writable files; `--same-permissions` keeps them exactly. Owners,
+  and so setuid and setgid bits, are never restored.
+- **Decompression bombs:** everything streams, so a 4 GiB bomb reads, tests, lists
+  and converts in constant memory (under 150 MB). Extracting one writes what it
+  holds, as tar does (there is no size limit), but when the disk fills the entry
+  fails, says why (`No space left on device`), exits 1 and leaves no partial file.
+  An overlapping-entry zip (many names, one compressed body) reads as its one real
+  entry, and zstd frames that want more than 128 MB of window are refused.
+- Names are printed with control characters escaped (`\033`, `\n`, `\\`), as GNU
+  tar does, so a name cannot send escape sequences to the terminal or fake a line
+  of output; `--json` escapes them the JSON way.
 - It names the entry that failed. A file it created and then failed to fill is removed.
 - **Passphrases:** without `-p` or `LA_PASSPHRASE`, an encrypted archive is asked for
   on the terminal, once per command.
@@ -171,6 +206,17 @@ curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F
   A name that matches nothing is an error, and nothing is extracted.
 - **`la rm`** rewrites the archive without the entries named, the way `-r` does, and
   `la cat` writes files' contents to standard output (a bare `x.gz`: decompressed).
+- **`la convert IN OUT`** copies every entry into OUT's format and compression (from
+  its name, or `-F`/`-z`), names, modes, times, links and all. OUT may be IN, to
+  recompress in place (`-f`). With `-p` an encrypted zip is read; OUT is encrypted with
+  it if it is a zip, and written decrypted (with a warning) otherwise.
+- **`-x GLOB`, `--newer WHEN`, `--older WHEN`** work with `x`, `l`, `cat` and
+  `convert` (`la a` has its own `-x`, and takes the other two). A glob leaves out what
+  it matches at any depth, with everything under a directory it matches. WHEN is a
+  file (its modification time) or a date: `2025-06-01`, `2025-06-01 14:00`,
+  `3 days ago`.
+- **`la l --json`** writes a JSON array, an object per entry: name, type, size, mode,
+  mtime (UTC), owners, link target and whether it is encrypted.
 - **`la diff`** compares each entry with the file at the same path under `-C DIR`
   (default: here): type, contents, symlink target and permissions, and with `-t`
   modification times. It also lists files on disk, in the directories the archive
@@ -191,6 +237,7 @@ Or download a binary from the [releases page](https://github.com/lispnik/libarch
 |---|---|
 | `la-macos-arm64`, `la-macos-x86_64` | macOS 11 or later |
 | `la-linux-x86_64`, `la-linux-aarch64` | glibc 2.28 or later (RHEL 8, Debian 10, Ubuntu 20.04 and newer) |
+| `la_*.deb`, `la-*.rpm` | the same, as packages: `sudo apt install ./la_*.deb`, `sudo dnf install ./la-*.rpm` |
 
 The release binaries have libarchive built in (3.8.10, with zlib, bzip2, xz, zstd, lz4,
 expat, and OpenSSL or CommonCrypto), so nothing else needs installing. They come with

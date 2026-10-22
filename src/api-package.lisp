@@ -21,6 +21,9 @@
    read-entry-data-into copy-entry-data skip-entry-data archive-has-encrypted-entries
    ;; writer.lisp
    open-archive-writer write-entry add-entry transfer-entry writer-octets
+   ;; match.lisp
+   archive-match make-archive-match with-archive-match entry-matches-p
+   archive-match-unmatched
    ;; disk.lisp
    extract-archive archive-directory *default-extract-flags* skip-entry
    *extract-flags* *read-disk-flags* *read-formats* *read-filters*

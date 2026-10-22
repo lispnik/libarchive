@@ -15,6 +15,7 @@
     ("archive_libexpat_version" . %archive-libexpat-version)
     ("archive_libbsdxml_version" . %archive-libbsdxml-version)
     ("archive_libxml2_version" . %archive-libxml2-version)
+    ("archive_xmllite_version" . %archive-xmllite-version)
     ("archive_mbedtls_version" . %archive-mbedtls-version)
     ("archive_nettle_version" . %archive-nettle-version)
     ("archive_openssl_version" . %archive-openssl-version)
