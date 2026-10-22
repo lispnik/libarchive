@@ -67,9 +67,9 @@
                         (add-entry w "VERSION" :data "1.0"))))
         (format t "~&Combined zip: ~S~%" (archive-entry-names combined)))
 
-      ;; Extract. The default flags restore permissions and times and refuse to
-      ;; write through symlinks or above the target; PROGRESS is called with the
-      ;; compressed bytes consumed so far.
+      ;; Extract. The default flags restore times, apply the umask to modes (add
+      ;; :perm for them exactly) and refuse to write through symlinks or above
+      ;; the target; PROGRESS is called with the compressed bytes consumed so far.
       (format t "~&Default extract flags: ~S~%" *default-extract-flags*)
       (let* ((out (merge-pathnames "restored/" dir))
              (calls 0)

@@ -720,3 +720,26 @@
           (is (= 2 (length (lines out)))))
         ;; JSON has escapes of its own.
         (is-true (search "\\u001B]0;owned\\u0007\\nfake line\\\\x" (la-ok "l" "--json" "e.tar")))))))
+
+(test max-size
+  (in-scratch-directory
+    (write-archive "big.tar.gz" (libarchive:with-archive-to-octets (w :format :pax :filters :gzip)
+                                  (libarchive:add-entry w "d/small" :data "x")
+                                  (libarchive:add-entry w "d/zeros" :data (make-array 2000000 :element-type '(unsigned-byte 8)
+                                                                                         :initial-element 0))))
+    (multiple-value-bind (code out err) (la "x" "--max-size" "1M" "big.tar.gz" "-C" "a")
+      (declare (ignore out))
+      (is (= 1 code))
+      (is-true (search "d/zeros: stopped" err)))
+    (is (exists "a/d/small"))
+    (is (not (exists "a/d/zeros")))
+    (la-ok "x" "-q" "--max-size" "3M" "big.tar.gz" "-C" "b")
+    (is (exists "b/d/zeros"))
+    ;; A compressed file says nothing of its size: counted as it is written.
+    (write-archive "z.bin.gz" (libarchive:with-archive-to-octets (w :format :raw :filters :gzip)
+                                (libarchive:add-entry w "data" :data (make-array 2000000 :element-type '(unsigned-byte 8)
+                                                                                       :initial-element 0))))
+    (is (= 1 (la "x" "-q" "--max-size" "1M" "z.bin.gz" "-C" "c")))
+    (is (not (exists "c/z.bin")))
+    (la-ok "x" "-q" "--max-size" "2M" "z.bin.gz" "-C" "d")
+    (is (= 2 (la "x" "--max-size" "big" "z.bin.gz")))))

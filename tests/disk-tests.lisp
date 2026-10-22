@@ -251,3 +251,45 @@ the messages of what was refused."
                                   dest)))
       (is (= before (stat-mode dest)))
       (is-true (outside-untouched-p outside)))))
+
+(test extract-max-size
+  (let ((archive (with-archive-to-octets (w :format :pax)
+                   (add-entry w "small" :data (random-octets 1000))
+                   (add-entry w "big" :data (random-octets 5000)))))
+    (with-temp-directory (dir)
+      ;; By the declared size: nothing of "big" is written. Skipping failed
+      ;; entries does not carry on past the limit.
+      (let ((c (handler-bind ((archive-error (lambda (c) (declare (ignore c))
+                                               (invoke-restart 'skip-entry))))
+                 (handler-case (extract-archive archive dir :max-size 3000)
+                   (extraction-limit-exceeded (c) c)))))
+        (is (typep c 'extraction-limit-exceeded))
+        (is (string= "big" (extraction-limit-entry c)))
+        (is (= 3000 (extraction-limit c))))
+      (is-true (probe-file (merge-pathnames "small" dir)))
+      (is-false (probe-file (merge-pathnames "big" dir)))
+      (is (equal '("small" "big") (extract-archive archive (merge-pathnames "all/" dir)
+                                                   :max-size 6000)))))
+  ;; A zip read as a stream does not know its sizes: counted as written.
+  (let ((zip (with-archive-to-octets (w :format :zip)
+               (add-entry w "data" :data (make-array 100000 :element-type '(unsigned-byte 8)
+                                                            :initial-element 0)))))
+    (with-temp-directory (dir)
+      (signals extraction-limit-exceeded
+        (extract-archive (make-octet-input-stream zip) dir :max-size 50000)))))
+
+(test extract-applies-the-umask-by-default
+  (let ((archive (with-archive-to-octets (w :format :pax)
+                   (add-entry w "open" :data "x" :perm #o777)
+                   (add-entry w "dir/" :perm #o777)))
+        (umask 0))
+    (with-temp-directory (dir)
+      ;; The umask, portably: what it takes from a new file's rw-rw-rw-.
+      (setf umask (logandc2 #o666 (logand #o777 (stat-mode (write-file (merge-pathnames "probe" dir) "")))))
+      (extract-archive archive dir)
+      (unless (zerop umask)
+        (is (= (logandc2 #o777 umask) (logand #o777 (stat-mode (merge-pathnames "open" dir)))))
+        (is (= (logandc2 #o777 umask) (logand #o777 (stat-mode (merge-pathnames "dir/" dir))))))
+      (extract-archive archive (merge-pathnames "exact/" dir)
+                       :flags (cons :perm *default-extract-flags*))
+      (is (= #o777 (logand #o777 (stat-mode (merge-pathnames "exact/open" dir))))))))

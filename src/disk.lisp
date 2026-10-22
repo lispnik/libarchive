@@ -3,9 +3,12 @@
 (in-package #:libarchive)
 
 (defparameter *default-extract-flags*
-  '(:time :perm :secure-symlinks :secure-nodotdot)
-  "EXTRACT-ARCHIVE's default flags: restore modes and times, and refuse to
-write through symlinks or above the target directory.")
+  '(:time :secure-symlinks :secure-nodotdot)
+  "EXTRACT-ARCHIVE's default flags: restore times, and refuse to write through
+symlinks or above the target directory. Modes are restored less the umask, as
+tar does for anyone but root, so that an archive cannot leave world-writable
+files behind; add :perm to restore them exactly (and :owner for owners, and
+with them setuid and setgid bits).")
 
 (defun attach-native-entry (reader)
   (let ((e (%archive-entry-new2 (live-pointer reader))))
@@ -41,7 +44,25 @@ cannot be used; this check is done on the names as they are in the archive."
   (every (lambda (part) (member part '("" ".") :test #'string=))
          (uiop:split-string name :separator "/")))
 
-(defun extract-entry (reader disk entry progress)
+(define-condition extraction-limit-exceeded (error)
+  ((limit :initarg :limit :reader extraction-limit)
+   (entry :initarg :entry :reader extraction-limit-entry))
+  (:report (lambda (c s)
+             (format s "Extracting ~A would write more than the limit of ~:D bytes."
+                     (extraction-limit-entry c) (extraction-limit c))))
+  (:documentation "Signalled by EXTRACT-ARCHIVE when its :MAX-SIZE would be passed.
+Not an ARCHIVE-ERROR, so that a handler skipping failed entries does not carry
+on past it: extraction stops."))
+
+(defun spend (budget bytes entry)
+  "Take BYTES from BUDGET, (bytes still allowed . the limit), or NIL for no
+limit; signal EXTRACTION-LIMIT-EXCEEDED if there are not that many."
+  (when budget
+    (when (> bytes (car budget))
+      (error 'extraction-limit-exceeded :limit (cdr budget) :entry entry))
+    (decf (car budget) bytes)))
+
+(defun extract-entry (reader disk entry progress &optional budget (name (entry-pathname entry)))
   "Write ENTRY, READER's current one, to the disk writer DISK, data and all.
 
 This is archive_read_extract2, but with libarchive's own result codes: that
@@ -50,6 +71,10 @@ checks, say) as a mere ARCHIVE_WARN, after which the entry is easily taken for
 extracted. Here a header that fails is an ARCHIVE-ERROR, and so is a data write
 that fails, which libarchive also calls a warning."
   (let ((d (live-pointer disk)))
+    ;; A declared size over the limit stops before anything is written. The
+    ;; data is still counted as it comes: sizes can be missing, or lie.
+    (when (and budget (entry-size-set-p entry) (> (entry-size entry) (car budget)))
+      (error 'extraction-limit-exceeded :limit (cdr budget) :entry name))
     (handler-case
         (progn
           (check-result disk (%archive-write-header d (entry-pointer entry)) "archive_write_header")
@@ -57,7 +82,8 @@ that fails, which libarchive also calls a warning."
             (cffi:with-foreign-objects ((buffer :pointer) (size :size) (offset :int64))
               (loop for code = (checked reader (%archive-read-data-block buffer size offset))
                     until (= code +archive-eof+)
-                    do (let ((written (%archive-write-data-block
+                    do (spend budget (cffi:mem-ref size :size) name)
+                       (let ((written (%archive-write-data-block
                                        d (cffi:mem-ref buffer :pointer)
                                        (cffi:mem-ref size :size) (cffi:mem-ref offset :int64))))
                          ;; A failed write (a full disk) is only ARCHIVE_WARN
@@ -78,7 +104,8 @@ that fails, which libarchive also calls a warning."
 
 (defun extract-archive (source directory &key (flags *default-extract-flags*)
                                              (formats :all) (filters :all)
-                                             passphrase options filter match progress)
+                                             passphrase options filter match progress
+                                             max-size)
   "Extract the archive SOURCE (anything OPEN-ARCHIVE-READER accepts, or an open
 ARCHIVE-READER) into DIRECTORY, creating it if need be. Returns the list of
 entry names extracted.
@@ -96,12 +123,19 @@ under another name; the safety checks apply to the new names. PROGRESS, if
 given, is called as data is written with the number of (compressed) bytes
 consumed so far.
 
+MAX-SIZE, if given, limits the data written in all, in bytes: a defence against
+decompression bombs. An entry that would pass it signals
+EXTRACTION-LIMIT-EXCEEDED, before anything is written if its size says so, and
+extraction stops; what was written of it is left for the caller to remove.
+
 Each refused or failed entry signals an ARCHIVE-ERROR with a SKIP-ENTRY restart:
 those that would escape DIRECTORY, those libarchive refuses (a path through a
 symlink, with :secure-symlinks), and those that cannot be written."
   (let ((root (uiop:native-namestring
                (truename (ensure-directories-exist (uiop:ensure-directory-pathname directory)))))
-        (extracted '()))
+        (extracted '())
+        ;; (bytes still allowed . the limit)
+        (budget (and max-size (cons max-size max-size))))
     (flet ((run (reader)
              (let ((disk (make-disk-writer flags)))
                (unwind-protect
@@ -121,7 +155,7 @@ symlink, with :secure-symlinks), and those that cannot be written."
                                          (setf (entry-pathname e) (concatenate 'string root name))
                                          (when link
                                            (setf (entry-hardlink e) (concatenate 'string root link)))
-                                         (extract-entry reader disk e progress)
+                                         (extract-entry reader disk e progress budget name)
                                          (push name extracted))))
                                  (skip-entry ()
                                    :report "Skip this entry and go on to the next."

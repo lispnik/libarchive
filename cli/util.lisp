@@ -212,6 +212,21 @@ given. The tests turn it off; without a terminal there is nobody to ask anyway."
 
 ;;; Output helpers.
 
+(defun parse-size (string option)
+  "A size such as 4096, 500K, 10M, 1.5G or 2T (powers of 1024), in bytes."
+  (let* ((string (string-trim " " string))
+         (unit (and (plusp (length string))
+                    (position (char-upcase (char string (1- (length string)))) "BKMGT")))
+         (digits (if unit (subseq string 0 (1- (length string))) string))
+         (number (and (plusp (length digits))
+                      (every (lambda (c) (or (digit-char-p c) (char= c #\.))) digits)
+                      (<= (count #\. digits) 1)
+                      (let ((*read-default-float-format* 'double-float))
+                        (ignore-errors (let ((*read-eval* nil)) (read-from-string digits)))))))
+    (unless (realp number)
+      (usage-error "~A: ~S is not a size (say 500M, 10G or a number of bytes)" option string))
+    (values (floor (* number (expt 1024 (or unit 0)))))))
+
 (defun human-size (bytes)
   (if (< bytes 1024)
       (format nil "~D B" bytes)

@@ -199,7 +199,10 @@ that `free-entry` cancels.
   entry, closing the disk writer still sets that file's times, so `la x` removes
   partial files only after `extract-archive` returns. `ci/cli-smoke.sh` checks this
   with `ulimit -f` (and SIGXFSZ ignored), since a full disk can't be made portably.
-- `la x` leaves `:perm` out (umask applies) unless root or `--same-permissions`,
+- `*default-extract-flags*` has no `:perm` (the umask applies, as tar for non-root);
+  `extract-archive :max-size` budgets bytes through `spend` and signals
+  `extraction-limit-exceeded`, deliberately not an `archive-error`.
+- `la x` adds `:perm` only for root or `--same-permissions`,
   never restores owners, and won't replace an existing non-directory with a
   directory entry. `lexists-p` lstats without a trailing `/`, which would follow a
   symlink at the end. Everything la prints goes through `printable`/`say` (control

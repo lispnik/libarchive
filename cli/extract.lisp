@@ -133,6 +133,13 @@ name and MATCH, if any, chooses it."
         (subseq there (length here))
         there)))
 
+(defvar *max-size* nil
+  "--max-size in bytes: the most la x may write, or NIL for no limit.")
+
+(defun over-the-limit (what)
+  (fail "~A: stopped, as it would write more than --max-size ~A ~
+         (it may be a decompression bomb)" what (human-size *max-size*)))
+
 (defun extract-raw (archive name destination passphrase overwrite)
   "Decompress a bare compressed file to DESTINATION/<name without the suffix>."
   (let ((out (merge-pathnames (uiop:parse-native-namestring
@@ -146,7 +153,16 @@ name and MATCH, if any, chooses it."
       (handler-case
           (with-open-file (s out :direction :output :element-type '(unsigned-byte 8)
                                  :if-exists :supersede)
-            (copy-entry-data r s))
+            (let ((buffer (make-array 65536 :element-type '(unsigned-byte 8)))
+                  (total 0))
+              (loop for n = (read-entry-data-into r buffer)
+                    until (zerop n)
+                    do (incf total n)
+                       (when (and *max-size* (> total *max-size*))
+                         (close s :abort t)
+                         (ignore-errors (delete-file out))
+                         (over-the-limit (display-name name)))
+                       (write-sequence buffer s :end n))))
         ((or stream-error file-error) (c)
           (ignore-errors (delete-file out))
           (fail "~A: cannot write: ~A" (relative-display out) (os-reason c)))))
@@ -163,6 +179,8 @@ name and MATCH, if any, chooses it."
     (when (null args)
       (usage-error "x takes an archive, and optionally the entries to extract (see la x --help)"))
     (when (minusp strip) (usage-error "--strip-components takes a count of 0 or more"))
+    (setf *max-size* (let ((size (clingon:getopt cmd :max-size)))
+                       (and size (parse-size size "--max-size"))))
     (destructuring-bind (name &rest patterns) args
       (let ((passphrase (passphrase-source cmd (display-name name))))
         (flet ((raw (archive)
@@ -210,7 +228,7 @@ owner)."
           (if (or same-permissions (zerop (sb-posix:geteuid)))
               '(:perm)
               '())
-          (remove :perm *default-extract-flags*)))
+          *default-extract-flags*))
 
 (defun extract-into (archive name destination roots passphrase overwrite verbose strip
                      &optional (chosen (constantly t)) same-permissions)
@@ -223,8 +241,13 @@ owner)."
          (current-file nil)             ; ...and the file it creates, if it is new
          (partial '())                  ; files to remove: failed, and new
          (extracted
+          (handler-case
           (unwind-protect
-           (handler-bind ((archive-error
+           (handler-bind ((extraction-limit-exceeded
+                            (lambda (c)
+                              (declare (ignore c))
+                              (when current-file (push current-file partial))))
+                          (archive-error
                             (lambda (c)
                               (let ((restart (find-restart 'skip-entry c))
                                     (message (archive-message c)))
@@ -248,6 +271,7 @@ owner)."
               archive target
               :passphrase (reader-passphrase passphrase)
               :flags (extract-flags overwrite same-permissions)
+              :max-size *max-size*
               :filter (lambda (e)
                         (setf current nil current-file nil)
                         (let* ((original (entry-pathname e))
@@ -282,7 +306,9 @@ owner)."
                                  (when verbose (say "~A" current))
                                  t))))))
             (dolist (file partial)
-              (ignore-errors (delete-file file))))))
+              (ignore-errors (delete-file file))))
+            (extraction-limit-exceeded (c)
+              (over-the-limit (extraction-limit-entry c))))))
     (note "~A: ~D entr~:@P extracted~@[ into ~A~]~@[, ~D skipped~]~@[, ~D failed~]"
           (display-name name) (length extracted)
           (and (> (length roots) 1) (relative-display target))
@@ -309,6 +335,8 @@ owner)."
                                                  :description "drop the first N directories of every name")
                    (clingon:make-option :flag :long-name "overwrite" :key :overwrite
                                               :description "replace files that already exist")
+                   (clingon:make-option :string :long-name "max-size" :key :max-size :parameter "SIZE"
+                                                :description "write no more than SIZE in all (500M, 10G): stops a bomb")
                    (clingon:make-option :flag :long-name "same-permissions" :key :same-permissions
                                               :description "modes exactly as archived, not less the umask (root: always)")
                    (clingon:make-option :flag :short-name #\v :long-name "verbose" :key :verbose

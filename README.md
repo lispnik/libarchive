@@ -112,9 +112,11 @@ after libarchive returns. It never unwinds through C.
 `extract-archive` refuses entries with absolute names or `..` components, and those
 libarchive refuses (with the default `:secure-symlinks`, any path through a symlink),
 and offers a `skip-entry` restart for those and for any other per-entry failure. It
-skips an entry for the target directory itself (`./`). Its default flags restore
-modes in full, as `tar -p` does: leave `:perm` out of `:flags` to apply the umask
-instead, as `la x` does.
+skips an entry for the target directory itself (`./`). Modes are restored less the
+umask, as tar does for anyone but root; add `:perm` to `:flags` to restore them
+exactly. `:max-size` caps the bytes written in all, against decompression bombs:
+passing it signals `extraction-limit-exceeded` (not an `archive-error`, so skipping
+failed entries doesn't carry on past it).
 
 ### Callbacks
 
@@ -186,8 +188,11 @@ curl -sL https://.../x.tgz | la x -    # - is standard input (or output, with -F
   and so setuid and setgid bits, are never restored.
 - **Decompression bombs:** everything streams, so a 4 GiB bomb reads, tests, lists
   and converts in constant memory (under 150 MB). Extracting one writes what it
-  holds, as tar does (there is no size limit), but when the disk fills the entry
-  fails, says why (`No space left on device`), exits 1 and leaves no partial file.
+  holds, as tar does, unless `--max-size 10G` (say) caps it: an entry whose size
+  would pass the cap stops extraction before it is written, and one that does not
+  say its size is counted as it is written and removed. When the disk fills, the
+  entry fails, says why (`No space left on device`), exits 1 and leaves no partial
+  file.
   An overlapping-entry zip (many names, one compressed body) reads as its one real
   entry, and zstd frames that want more than 128 MB of window are refused.
 - Names are printed with control characters escaped (`\033`, `\n`, `\\`), as GNU

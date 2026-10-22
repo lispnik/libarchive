@@ -458,3 +458,7 @@
     ("archive_entry_linkify" . %archive-entry-linkify)
     ("archive_entry_partial_links" . %archive-entry-partial-links))
   "C name -> raw Lisp function, for every function bound, in header order.")
+
+(defparameter *header-version-number* 3008010
+  "ARCHIVE_VERSION_NUMBER of the headers the raw layer was generated from.
+A loaded libarchive older than this may lack some of its functions.")

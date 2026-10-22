@@ -229,7 +229,7 @@ to combine several trees or add entries of your own alongside.
 - **`:directories nil`** leaves directory entries out but keeps their contents. Use
   it for warc and ar, which can't store directories.
 
-**`extract-archive`** by default restores permissions and times
+**`extract-archive`** by default restores times and modes less the umask
 (`*default-extract-flags*`) and refuses to write through symlinks. `:flags` takes
 any of the keywords in `*extract-flags*`, `:filter` chooses entries, and `:progress`
 reports bytes consumed.
@@ -273,9 +273,23 @@ entry it didn't write.
 
 Two more defaults matter for archives from elsewhere. An entry for the target
 directory itself (`./`, which `tar cf x.tar .` writes) is skipped, so the archive
-cannot change that directory's mode or times. And `:perm` restores modes exactly,
-world-writable ones included; without it the umask applies, which is what tar does
-for anyone but root. setuid and setgid survive only with `:owner`.
+cannot change that directory's mode or times. And modes are restored less the
+umask, which is what tar does for anyone but root: `:perm` restores them exactly,
+world-writable ones included, and setuid and setgid survive only with `:owner`
+too.
+
+Against decompression bombs, `:max-size` caps the bytes written in all:
+
+```lisp
+(handler-case (extract-archive download #p"unpacked/" :max-size (* 10 1024 1024 1024))
+  (extraction-limit-exceeded (c)
+    (format t "~A would pass the limit; stopped" (extraction-limit-entry c))))
+```
+
+An entry whose declared size would pass it stops extraction before anything of it
+is written; data with no declared size (a zip read from a stream) is counted as it
+comes, and the partly written file is the caller's to remove. The condition is not
+an `archive-error`, so a handler that skips failed entries doesn't carry on.
 
 → [`examples/disk.lisp`](../examples/disk.lisp)
 

@@ -8,7 +8,7 @@
   (let ((missing (remove-if #'foreign-function-available-p *foreign-function-names* :key #'car)))
     ;; Against an older libarchive some newer entry points are legitimately
     ;; absent; against the version the headers came from, none may be.
-    (if (>= (version-number) 3008000)
+    (if (>= (version-number) *header-version-number*)
         (is (null missing) "Unresolved: ~S" missing)
         (skip "libarchive ~A is older than the headers; ~D functions absent"
               (version-number) (length missing)))))

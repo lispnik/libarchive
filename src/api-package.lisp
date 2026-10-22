@@ -26,6 +26,7 @@
    archive-match-unmatched
    ;; disk.lisp
    extract-archive archive-directory *default-extract-flags* skip-entry
+   extraction-limit-exceeded extraction-limit extraction-limit-entry
    *extract-flags* *read-disk-flags* *read-formats* *read-filters*
    ;; with.lisp
    with-archive-reader with-archive-writer with-archive-to-octets

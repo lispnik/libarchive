@@ -221,6 +221,12 @@ def main(incdir, outdir):
                 "(defparameter *foreign-function-names*\n  '(")
         f.write("\n    ".join('("%s" . %%%s)' % (n, lisp_name(n)) for n in all_names))
         f.write(")\n  \"C name -> raw Lisp function, for every function bound, in header order.\")\n")
+        version = re.search(r"^#\s*define\s+ARCHIVE_VERSION_NUMBER\s+(\d+)",
+                            open(os.path.join(incdir, "archive.h")).read(), flags=re.M)
+        f.write("\n(defparameter *header-version-number* %s\n"
+                "  \"ARCHIVE_VERSION_NUMBER of the headers the raw layer was generated from.\n"
+                "A loaded libarchive older than this may lack some of its functions.\")\n"
+                % version.group(1))
     print("%d functions" % len(all_names))
 
 

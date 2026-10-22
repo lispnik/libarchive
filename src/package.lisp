@@ -19,5 +19,5 @@
    #:archive-error #:archive-fatal-error #:archive-retry #:archive-warning
    #:unsupported-function #:unsupported-function-name
    ;; raw-exports.lisp
-   #:*foreign-function-names* #:*constant-names*
+   #:*foreign-function-names* #:*constant-names* #:*header-version-number*
    #:foreign-function-available-p))
